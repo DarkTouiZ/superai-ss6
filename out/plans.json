@@ -1,0 +1,197 @@
+{
+  "requirement": "Add a 'Top Customers by Spend' screen to the eleven-7 ops console that lists each customer with their total spend and loyalty tier, reusing the canonical Angular primitives and fetching through ApiService, respecting the design tokens and integer-satang money rules.",
+  "provider": "mock",
+  "is_live": false,
+  "candidate_files": [
+    "context.md",
+    "target_repo/backend/src/services/notificationService.ts",
+    "target_repo/README.md",
+    "target_repo/backend/src/controllers/supportController.ts",
+    "target_repo/backend/src/controllers/orderController.ts"
+  ],
+  "plans": [
+    {
+      "id": "A",
+      "title": "Performance-optimized",
+      "priority_focus": "performance",
+      "summary": "Satisfy 'Add a 'Top Customers by Spend' screen to the eleven-7 ops console that lists each customer with their total spend and loyalty tier, reusing the canonical Angular primitives and fetching through ApiService, respecting the design tokens and integer-satang money rules.' with a server-side aggregate endpoint and a cached selector.",
+      "steps": [
+        "Add a top-customers SQL aggregate in the order repository.",
+        "Expose it via a dashboard controller route; paginate results.",
+        "Cache/memoize the response in ApiService so re-renders don't refetch.",
+        "Render the list with trackBy to minimize Angular re-renders."
+      ],
+      "files_touched": [
+        "target_repo/frontend/src/app/features/top-customers/top-customers.component.ts",
+        "target_repo/backend/src/services/notificationService.ts"
+      ],
+      "primitives_reused": [
+        "target_repo/frontend/src/app/shared/components/avatar/avatar.component.ts",
+        "target_repo/frontend/src/app/shared/components/badge/badge.component.ts"
+      ],
+      "tradeoffs": {
+        "pros": [
+          "Fast with thousands of customers",
+          "Less data over the wire"
+        ],
+        "cons": [
+          "More backend code",
+          "Cache invalidation to manage"
+        ]
+      }
+    },
+    {
+      "id": "B",
+      "title": "Maintainability / component reuse",
+      "priority_focus": "reuse",
+      "summary": "Satisfy 'Add a 'Top Customers by Spend' screen to the eleven-7 ops console that lists each customer with their total spend and loyalty tier, reusing the canonical Angular primitives and fetching through ApiService, respecting the design tokens and integer-satang money rules.' by composing existing primitives and the ApiService.",
+      "steps": [
+        "Compose the new screen from the canonical Card + MetricTile + Badge primitives.",
+        "Fetch data through ApiService only; add no new HTTP code.",
+        "Format money with the existing MoneyPipe; reference design tokens only.",
+        "Add a unit test for the spend-sorting logic in a service."
+      ],
+      "files_touched": [
+        "target_repo/frontend/src/app/features/top-customers/top-customers.component.ts"
+      ],
+      "primitives_reused": [
+        "target_repo/frontend/src/app/shared/components/avatar/avatar.component.ts",
+        "target_repo/frontend/src/app/shared/components/badge/badge.component.ts",
+        "target_repo/frontend/src/app/shared/components/button/button.component.ts",
+        "target_repo/frontend/src/app/shared/components/card/card.component.ts",
+        "target_repo/frontend/src/app/shared/components/metric-tile/metric-tile.component.ts"
+      ],
+      "tradeoffs": {
+        "pros": [
+          "Maximal reuse",
+          "Strong context.md adherence",
+          "Easy to review"
+        ],
+        "cons": [
+          "Not tuned for very large lists"
+        ]
+      }
+    },
+    {
+      "id": "C",
+      "title": "Pragmatic / fastest",
+      "priority_focus": "speed",
+      "summary": "Ship 'Add a 'Top Customers by Spend' screen to the eleven-7 ops console that lists each customer with their total spend and loyalty tier, reusing the canonical Angular primitives and fetching through ApiService, respecting the design tokens and integer-satang money rules.' fastest with a minimal component over the existing orders endpoint.",
+      "steps": [
+        "Call the existing orders endpoint via ApiService and aggregate client-side.",
+        "Reuse the Card primitive; skip extra abstraction."
+      ],
+      "files_touched": [
+        "target_repo/frontend/src/app/features/top-customers/top-customers.component.ts"
+      ],
+      "primitives_reused": [
+        "target_repo/frontend/src/app/shared/components/avatar/avatar.component.ts"
+      ],
+      "tradeoffs": {
+        "pros": [
+          "Quickest to deliver",
+          "Few moving parts"
+        ],
+        "cons": [
+          "Client-side aggregation",
+          "Less optimized"
+        ]
+      }
+    }
+  ],
+  "design": {
+    "requirement": "Add a 'Top Customers by Spend' screen to the eleven-7 ops console that lists each customer with their total spend and loyalty tier, reusing the canonical Angular primitives and fetching through ApiService, respecting the design tokens and integer-satang money rules.",
+    "uml_mermaid": "classDiagram\n    class TopCustomersComponent {\n        +rows: TopCustomerRow[]\n        +ngOnInit() void\n    }\n    class ApiService {\n        +getTopCustomers() Observable~TopCustomerRow[]~\n    }\n    TopCustomersComponent --> CardComponent : composes\n    TopCustomersComponent --> MetricTileComponent : composes\n    TopCustomersComponent --> ApiService : uses\n    TopCustomersComponent --> MoneyPipe : formats",
+    "api_spec": [
+      "ApiService.getTopCustomers(): Observable<TopCustomerRow[]>",
+      "GET /api/v1/dashboard/top-customers -> { rows: TopCustomerRow[] }",
+      "interface TopCustomerRow { customer_id: number; full_name: string; spend_satang: number }",
+      "TopCustomersComponent.ngOnInit(): void"
+    ],
+    "test_cases": [
+      {
+        "type": "functional",
+        "name": "renders one Card per customer with spend formatted by MoneyPipe"
+      },
+      {
+        "type": "functional",
+        "name": "sorts customers by total spend descending"
+      },
+      {
+        "type": "non_functional",
+        "name": "empty state shows a message, does not crash (context.md \u00a76)"
+      },
+      {
+        "type": "non_functional",
+        "name": "spend totals use integer satang, no float drift (context.md \u00a74/\u00a75)"
+      },
+      {
+        "type": "non_functional",
+        "name": "data fetched only via ApiService, not HttpClient/fetch (context.md \u00a74)"
+      },
+      {
+        "type": "functional",
+        "name": "interactive elements carry an aria-label (context.md \u00a76)"
+      }
+    ],
+    "ux_notes": "Compose canonical primitives; reference tokens.scss CSS variables only; no inline hex.",
+    "architecture_notes": "Aggregation in a backend service/repository; component fetches via ApiService only.",
+    "primitives_reused": [
+      "avatar",
+      "badge",
+      "button",
+      "card",
+      "metric-tile"
+    ],
+    "services_used": [
+      "target_repo/backend/src/services/notificationService.ts"
+    ]
+  },
+  "debate": {
+    "weights": {
+      "reuse": 0.4000000000000001,
+      "blueprint": 0.30000000000000004,
+      "performance": 0.20000000000000004,
+      "speed": 0.10000000000000002
+    },
+    "winner_id": "B",
+    "winner_focus": "reuse",
+    "margin": 0.1738,
+    "rationale": "Plan B ('reuse') wins with weighted score 0.7313 (margin 0.1738). Under the active priorities the dominant weight is 'reuse' (0.40); Plan B scores 1.00 there.",
+    "ranking": [
+      {
+        "plan_id": "B",
+        "focus": "reuse",
+        "subscores": {
+          "reuse": 1.0,
+          "blueprint": 1.0,
+          "performance": 0.0,
+          "speed": 0.3125
+        },
+        "weighted_total": 0.7313
+      },
+      {
+        "plan_id": "A",
+        "focus": "performance",
+        "subscores": {
+          "reuse": 0.4,
+          "blueprint": 0.575,
+          "performance": 1.0,
+          "speed": 0.25
+        },
+        "weighted_total": 0.5575
+      },
+      {
+        "plan_id": "C",
+        "focus": "speed",
+        "subscores": {
+          "reuse": 0.2,
+          "blueprint": 0.6,
+          "performance": 0.0,
+          "speed": 0.9375
+        },
+        "weighted_total": 0.3538
+      }
+    ]
+  }
+}

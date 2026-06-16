@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "superai-ss6"
+version = "1.0.0"
+description = "SuperAI SS6 — an autonomous AI software-engineering pipeline (Understand → Plan → Debate → Execute → Review) with local RAG and a context-aware compliance gate."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "SuperAI SS6" }]
+keywords = ["llm", "agents", "rag", "software-engineering", "langgraph", "autonomous"]
+
+# Core deps are intentionally light so `import agent_pipeline` works everywhere; the
+# pipeline degrades to a deterministic mock + lexical RAG when optional extras are
+# absent. Install [semantic] for real embeddings, [llm] for live providers.
+dependencies = [
+  "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+semantic = ["chromadb>=0.5.0", "sentence-transformers>=2.7.0"]
+llm = ["anthropic>=0.39.0"]
+orchestration = ["langgraph>=0.2.0", "langchain-core>=0.3.0"]
+dev = ["pytest>=8.0"]
+all = [
+  "chromadb>=0.5.0", "sentence-transformers>=2.7.0",
+  "anthropic>=0.39.0", "langgraph>=0.2.0", "langchain-core>=0.3.0", "pytest>=8.0",
+]
+
+[project.scripts]
+ss6 = "agent_pipeline.cli:main"
+
+[project.urls]
+Homepage = "https://example.com/superai-ss6"
+Repository = "https://example.com/superai-ss6"
+
+[tool.setuptools]
+# Ship the importable package; the target_repo/ test-bed and eval/ harnesses stay
+# in the source tree but are not packaged as importable modules.
+packages = [
+  "agent_pipeline",
+  "agent_pipeline.agents",
+  "agent_pipeline.rag",
+  "agent_pipeline.llm",
+  "agent_pipeline.graph",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

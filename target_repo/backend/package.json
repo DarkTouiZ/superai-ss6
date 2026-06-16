@@ -1,0 +1,37 @@
+{
+  "name": "eleven7-backend",
+  "version": "1.0.0",
+  "description": "eleven-7 delivery platform — Node.js + Express API, MySQL, AWS SNS/SQS/SMS",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "worker": "ts-node-dev --respawn --transpile-only src/workers/index.ts",
+    "migrate": "node scripts/migrate.js",
+    "test": "jest --runInBand",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sns": "^3.600.0",
+    "@aws-sdk/client-sqs": "^3.600.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "mysql2": "^3.10.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.14.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.5",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

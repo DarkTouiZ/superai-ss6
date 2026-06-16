@@ -1,0 +1,126 @@
+{
+  "description": "Hardened Recall@k dataset for the SS6 RAG retriever over the eleven-7 codebase. 'queries' are positives (each lists the file(s) that genuinely answer it); many are paraphrased to share little/no vocabulary with the target, and the repo contains look-alike files (snsClient vs smsClient, orderRepository vs productRepository, money.ts vs pricing.ts, Card vs MetricTile vs Badge) that the right answer must beat. 'negatives' are hard negatives whose answer is ABSENT from the repo — a confident hit is a false positive. Paths are relative to project root.",
+  "queries": [
+    {
+      "id": "q1",
+      "query": "how is a delivery fee worked out from the cart total and pickup vs delivery?",
+      "relevant": ["target_repo/backend/src/services/pricing.ts"],
+      "note": "must beat money.ts and orderService.ts"
+    },
+    {
+      "id": "q2",
+      "query": "turning an integer satang amount into a readable baht string",
+      "relevant": ["target_repo/backend/src/utils/money.ts"],
+      "note": "paraphrase; must beat pricing.ts"
+    },
+    {
+      "id": "q3",
+      "query": "writing an order and its line items together so they can't half-save",
+      "relevant": ["target_repo/backend/src/repositories/orderRepository.ts"],
+      "note": "paraphrase of transactional insert; must beat productRepository"
+    },
+    {
+      "id": "q4",
+      "query": "the one wrapper every Amazon text-message to a phone number goes through",
+      "relevant": ["target_repo/backend/src/aws/smsClient.ts"],
+      "note": "must beat snsClient.ts (topic publish) distractor"
+    },
+    {
+      "id": "q5",
+      "query": "pushing a job onto the queue and polling messages back off it",
+      "relevant": ["target_repo/backend/src/aws/sqsClient.ts"],
+      "note": "must beat snsClient.ts"
+    },
+    {
+      "id": "q6",
+      "query": "single source of palette, spacing and font-size constants for the UI",
+      "relevant": ["target_repo/frontend/src/styles/tokens.scss"],
+      "note": "paraphrase of design tokens"
+    },
+    {
+      "id": "q7",
+      "query": "every backend call to the database is funneled through one connection pool",
+      "relevant": ["target_repo/backend/src/db/pool.ts"]
+    },
+    {
+      "id": "q8",
+      "query": "which UI building blocks must I reuse before making new ones?",
+      "relevant": ["context.md"]
+    },
+    {
+      "id": "q9",
+      "query": "picking a free rider in the right zone and guessing how many minutes the trip takes",
+      "relevant": ["target_repo/backend/src/services/deliveryService.ts"],
+      "note": "paraphrase of courier assignment + ETA"
+    },
+    {
+      "id": "q10",
+      "query": "the only place the Angular app is allowed to make HTTP calls",
+      "relevant": ["target_repo/frontend/src/app/core/services/api.service.ts"]
+    },
+    {
+      "id": "q11",
+      "query": "round badge that shows a person's initials",
+      "relevant": ["target_repo/frontend/src/app/shared/components/avatar/avatar.component.ts"]
+    },
+    {
+      "id": "q12",
+      "query": "the small coloured pill that flags an order or courier status",
+      "relevant": ["target_repo/frontend/src/app/shared/components/badge/badge.component.ts"],
+      "note": "must beat the MetricTile and Card primitives"
+    },
+    {
+      "id": "q13",
+      "query": "the background consumer that assigns a courier and texts the customer it's on the way",
+      "relevant": ["target_repo/backend/src/workers/dispatchWorker.ts"],
+      "note": "must beat orderWorker.ts"
+    },
+    {
+      "id": "q14",
+      "query": "where the tables, money columns and foreign keys for orders are defined",
+      "relevant": ["target_repo/backend/db/migrations/001_schema.sql"],
+      "note": "must beat the seed-data file 002_seed.sql"
+    },
+    {
+      "id": "q15",
+      "query": "applying a coupon code and capping the percentage discount",
+      "relevant": ["target_repo/backend/src/services/promotionService.ts"],
+      "note": "PerksEngine; must beat pricing.ts"
+    },
+    {
+      "id": "q16",
+      "query": "issuing a partial refund and recording the payment lifecycle event",
+      "relevant": ["target_repo/backend/src/services/paymentService.ts"],
+      "note": "PaySwift"
+    },
+    {
+      "id": "q17",
+      "query": "moving stock from one branch to another and alerting when one runs low",
+      "relevant": ["target_repo/backend/src/services/stockKeeperService.ts"],
+      "note": "StockKeeper"
+    },
+    {
+      "id": "q18",
+      "query": "the product codenames mapped to each internal microservice",
+      "relevant": ["target_repo/backend/src/services/registry.ts"]
+    }
+  ],
+  "negatives": [
+    {
+      "id": "n1",
+      "query": "how does the GraphQL subscription for live order updates get set up?"
+    },
+    {
+      "id": "n2",
+      "query": "the biometric / fingerprint login screen for the courier app"
+    },
+    {
+      "id": "n3",
+      "query": "Kubernetes horizontal pod autoscaler configuration for the API"
+    },
+    {
+      "id": "n4",
+      "query": "the Redis write-through cache layer in front of MySQL"
+    }
+  ]
+}

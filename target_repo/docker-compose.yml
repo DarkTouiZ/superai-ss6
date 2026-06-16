@@ -1,0 +1,82 @@
+# eleven-7 — full local stack: MySQL + LocalStack (SNS/SQS) + API + worker + Angular.
+# Usage: docker compose up --build
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: eleven7
+      MYSQL_USER: eleven7
+      MYSQL_PASSWORD: eleven7pass
+    ports:
+      - "3306:3306"
+    volumes:
+      # Migrations are applied in filename order on first boot.
+      - ./backend/db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-prootpass"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  localstack:
+    image: localstack/localstack:3
+    environment:
+      SERVICES: sns,sqs
+      DEFAULT_REGION: ap-southeast-1
+    ports:
+      - "4566:4566"
+    volumes:
+      - ./localstack/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh:ro
+
+  api:
+    build: ./backend
+    command: npm start
+    depends_on:
+      mysql:
+        condition: service_healthy
+      localstack:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DB_HOST: mysql
+      DB_USER: eleven7
+      DB_PASSWORD: eleven7pass
+      DB_NAME: eleven7
+      AWS_REGION: ap-southeast-1
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SNS_ORDER_TOPIC_ARN: arn:aws:sns:ap-southeast-1:000000000000:eleven7-order-events
+      SQS_ORDER_QUEUE_URL: http://localstack:4566/000000000000/eleven7-order-processing
+      SQS_DISPATCH_QUEUE_URL: http://localstack:4566/000000000000/eleven7-delivery-dispatch
+    ports:
+      - "4000:4000"
+
+  worker:
+    build: ./backend
+    # Run the COMPILED worker (the runtime image has prod deps only — no ts-node-dev).
+    command: node dist/workers/index.js
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: production
+      DB_HOST: mysql
+      DB_USER: eleven7
+      DB_PASSWORD: eleven7pass
+      DB_NAME: eleven7
+      AWS_REGION: ap-southeast-1
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SNS_ORDER_TOPIC_ARN: arn:aws:sns:ap-southeast-1:000000000000:eleven7-order-events
+      SQS_ORDER_QUEUE_URL: http://localstack:4566/000000000000/eleven7-order-processing
+      SQS_DISPATCH_QUEUE_URL: http://localstack:4566/000000000000/eleven7-delivery-dispatch
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - api
+    ports:
+      - "4200:80"

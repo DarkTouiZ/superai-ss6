@@ -1,0 +1,14 @@
+# --- Week 1: RAG foundation ---
+chromadb>=0.5.0
+sentence-transformers>=2.7.0
+numpy>=1.26
+
+# --- Orchestration (wired up Week 2+) ---
+langgraph>=0.2.0
+langchain-core>=0.3.0
+
+# --- LLM provider (agents, Week 2+) ---
+anthropic>=0.39.0
+
+# --- Tooling ---
+pytest>=8.0

@@ -1,0 +1,14 @@
+@use 'styles/tokens';
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-family);
+  font-size: var(--font-size-body);
+}
+
+a { color: var(--color-brand); }
