@@ -50,6 +50,26 @@ review  = execute(payload)                              # implements winner on a
 Provider selection: `SS6_LLM_PROVIDER=auto|anthropic|gemini|ollama|mock` (default `auto`,
 which falls back to the deterministic `mock` when no provider is configured).
 
+## Closed-loop demo — requirement → running feature → PR (zero cost)
+
+The gate can run the target repo's **real `tsc` + `jest`** (not just syntactic
+checks) inside the isolated branch copy:
+
+```bash
+ss6 run "Add a Top Customers by Spend analytics endpoint" --out ./out --run-tests
+#   Winner : Plan B (reuse)
+#   PASS   tsc  (real check)   ← the generated change actually compiles
+#   PASS   jest (real check)   ← the generated unit test passes
+#   Gate   : PASS  →  halts for human review (nothing merged)
+```
+
+`make demo` (or `bash scripts/ss6_demo.sh "<requirement>"`) takes it the whole way on
+a machine with Docker running: generate → real gate → apply → rebuild the API →
+**curl the new live endpoint** → open a **draft GitHub PR**. Everything runs on the
+deterministic mock provider and local tooling, so the demo is **$0** and needs no API
+key. Live example: `GET /api/v1/dashboard/top-customers` returns the top customers
+by spend straight from MySQL, and the change ships as a draft PR awaiting review.
+
 ## The four phases
 
 | Phase | Owner agent | Output | Eval metric |
