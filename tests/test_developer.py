@@ -33,8 +33,9 @@ def test_developer_creates_branch_and_compliant_code():
     assert res.branch.startswith("ss6/")
     assert res.changed_files, "expected at least one changed file"
     assert res.files[0]["content"], "generated file has content"
+    assert len(res.files) >= 2, "expected a multi-file vertical slice"
     # the generated diff exists in the isolated copy
-    assert "TopCustomersComponent" in res.diff
+    assert "rankCustomersBySpend" in res.diff
 
 
 def test_review_passes_generated_code():
@@ -44,10 +45,17 @@ def test_review_passes_generated_code():
 
 
 def test_compliance_gate_catches_violations():
-    bad = check_file("Bad.tsx", "export const X = () => <div style={{color:'#fff'}}/>; fetch('/x');")
-    assert not bad.passed
-    joined = " ".join(bad.violations)
-    assert "hex" in joined and "fetch()" in joined
+    # fetch() is forbidden everywhere (front end and back end)
+    bad_fetch = check_file("svc.ts", "export const X = () => { fetch('/x'); };")
+    assert not bad_fetch.passed
+    assert any("fetch()" in v for v in bad_fetch.violations)
+    # inline hex is a component-scoped rule (UI must use design tokens)
+    comp = "import {Component} from '@angular/core'; @Component({styles:[`.x{color:#fff}`]}) export class C {}"
+    bad_hex = check_file("c.component.ts", comp)
+    assert not bad_hex.passed
+    assert any("hex" in v for v in bad_hex.violations)
+    # test files are validated by jest, not by the syntactic gate
+    assert check_file("a.test.ts", "describe('x',()=>{})").passed
 
 
 def test_execution_eval_discriminates():

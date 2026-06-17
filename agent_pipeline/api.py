@@ -82,10 +82,15 @@ def debate(plans: PlansLike, weights: Optional[dict] = None) -> dict:
     return result_to_dict(EvaluatorAgent(weights=weights).evaluate(plan_list))
 
 
-def execute(plans: PlansLike, out_dir: Optional[Path] = None) -> dict:
+def execute(plans: PlansLike, out_dir: Optional[Path] = None, run_tests: bool = False) -> dict:
     """Phases 3b-4 — implement the debate-winning plan on an isolated git branch,
     run the context.md compliance suite, and HALT for human review (never merges).
-    Returns a summary; writes REVIEW.md when ``out_dir`` is given."""
+    Returns a summary; writes REVIEW.md when ``out_dir`` is given.
+
+    ``run_tests=True`` additionally runs the target repo's real ``tsc`` and ``jest``
+    inside the isolated copy (zero cost, local only) and folds the result into the
+    gate — so the change must both be compliant and actually compile + pass tests.
+    """
     payload = _coerce_payload(plans)
     plan_list = payload["plans"]
     design = payload.get("design", {})
@@ -97,8 +102,16 @@ def execute(plans: PlansLike, out_dir: Optional[Path] = None) -> dict:
 
     exec_result = DeveloperAgent().execute(requirement, winner, design)
     review = review_files(exec_result.files)
+
+    test_results = []
+    tests_passed = True
+    if run_tests:
+        from agent_pipeline import checks
+        test_results = checks.run_backend_checks(exec_result.workdir)
+        tests_passed = checks.checks_passed(test_results)
+
     if out_dir is not None:
-        write_review_md(exec_result, review, Path(out_dir))
+        write_review_md(exec_result, review, Path(out_dir), checks=test_results)
     return {
         "branch": exec_result.branch,
         "workdir": exec_result.workdir,
@@ -107,15 +120,19 @@ def execute(plans: PlansLike, out_dir: Optional[Path] = None) -> dict:
         "is_live": exec_result.is_live,
         "compliance_passed": review.passed,
         "violations": [v for f in review.files for v in f.violations],
+        "tests_run": bool(run_tests),
+        "tests": [{"name": r.name, "result": r.mark, "detail": r.detail[:400]} for r in test_results],
+        "tests_passed": tests_passed,
+        "gate_passed": review.passed and tests_passed,
         "awaiting_human_review": True,
     }
 
 
-def run(requirement: str, out_dir: Optional[Path] = None) -> dict:
+def run(requirement: str, out_dir: Optional[Path] = None, run_tests: bool = False) -> dict:
     """Convenience: the entire loop (plan -> execute) for one requirement."""
     out = Path(out_dir) if out_dir is not None else config.PROJECT_ROOT / "out"
     payload = plan(requirement, out_dir=out)
-    review = execute(payload, out_dir=out)
+    review = execute(payload, out_dir=out, run_tests=run_tests)
     return {"plan": payload, "review": review}
 
 

@@ -49,25 +49,32 @@ def _cmd_debate(args: argparse.Namespace) -> int:
 
 
 def _cmd_execute(args: argparse.Namespace) -> int:
-    review = api.execute(args.plans, out_dir=args.out)
+    review = api.execute(args.plans, out_dir=args.out, run_tests=args.run_tests)
     print(f"Branch     : {review['branch']}")
     print(f"Changed    : {', '.join(review['changed_files']) or '—'}")
     print(f"Compliance : {'PASS' if review['compliance_passed'] else 'FAIL'}")
     for v in review["violations"]:
         print(f"   ❌ {v}")
+    for t in review.get("tests", []):
+        print(f"   {t['result'].upper():8} {t['name']} (real check)")
+    if review.get("tests_run"):
+        print(f"Gate       : {'PASS' if review['gate_passed'] else 'FAIL'} (compliance + tsc + jest)")
     print(f"\n⏸  Halted for human review. See {args.out}/REVIEW.md — nothing merged.")
-    return 0 if review["compliance_passed"] else 1
+    return 0 if review.get("gate_passed", review["compliance_passed"]) else 1
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    result = api.run(args.requirement, out_dir=args.out)
+    result = api.run(args.requirement, out_dir=args.out, run_tests=args.run_tests)
     d = result["plan"]["debate"]
     r = result["review"]
     print(f"Winner     : Plan {d['winner_id']} ({d['winner_focus']})")
     print(f"Branch     : {r['branch']}")
-    print(f"Compliance : {'PASS' if r['compliance_passed'] else 'FAIL'}")
+    for t in r.get("tests", []):
+        print(f"   {t['result'].upper():8} {t['name']} (real check)")
+    passed = r.get("gate_passed", r["compliance_passed"])
+    print(f"Gate       : {'PASS' if passed else 'FAIL'}")
     print(f"⏸  Halted for human review. Artifacts in {args.out}/")
-    return 0 if r["compliance_passed"] else 1
+    return 0 if passed else 1
 
 
 _EVALS = {
@@ -113,11 +120,13 @@ def build_parser() -> argparse.ArgumentParser:
     pe = sub.add_parser("execute", help="Phases 3b-4: implement winner + compliance, halt")
     pe.add_argument("--plans", type=Path, default=config.PROJECT_ROOT / "out" / "plans.json")
     pe.add_argument("--out", type=Path, default=config.PROJECT_ROOT / "out")
+    pe.add_argument("--run-tests", action="store_true", help="also run the repo's real tsc + jest in the isolated copy")
     pe.set_defaults(func=_cmd_execute)
 
     pn = sub.add_parser("run", help="whole loop: plan -> execute")
     pn.add_argument("requirement")
     pn.add_argument("--out", type=Path, default=config.PROJECT_ROOT / "out")
+    pn.add_argument("--run-tests", action="store_true", help="also run the repo's real tsc + jest in the isolated copy")
     pn.set_defaults(func=_cmd_run)
 
     pv = sub.add_parser("eval", help="run an eval harness")
