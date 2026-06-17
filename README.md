@@ -11,6 +11,45 @@ localized codebase — here, **eleven-7**, a mock goods/products delivery app
 > Execute → Review all run end to end, each with its own evaluation harness.
 > Everything is mocked/local and self-contained; no production systems are touched.
 
+## Install & quickstart
+
+SS6 is a pip-installable tool with both a CLI (`ss6`) and a callable Python API.
+It runs fully offline by default (deterministic mock + lexical RAG), so no API key
+or GPU is required to try it.
+
+```bash
+pip install -e .                 # editable install; adds the `ss6` command
+# optional extras:
+#   pip install -e ".[semantic]"  # real embeddings (sentence-transformers + chromadb)
+#   pip install -e ".[llm]"       # live Anthropic provider
+#   pip install -e ".[all]"       # everything incl. pytest
+```
+
+**Command line** (warnings go to stderr, JSON to stdout — composable):
+
+```bash
+ss6 rag "how is the delivery fee computed from the cart total?"   # Phase 1: retrieve
+ss6 plan "Add a Top Customers by Spend screen" --out ./out        # Phases 1–3 → out/
+ss6 debate --plans out/plans.json                                 # re-score plans
+ss6 execute --plans out/plans.json --out ./out                    # Phases 3b–4 → REVIEW.md (halts)
+ss6 run "Add ALL Member points redemption at checkout" --out ./out # whole loop
+ss6 eval debate --plans out/plans.json                            # run an eval harness
+```
+
+**Python API** (functions return plain dicts — easy to call as tools):
+
+```python
+from agent_pipeline import retrieve, plan, debate, execute, run
+
+paths   = retrieve("how is a delivery fee computed?")   # -> ["target_repo/backend/src/services/pricing.ts", ...]
+payload = plan("Add a Top Customers by Spend screen")   # design + 3 plans + debate winner
+review  = execute(payload)                              # implements winner on an isolated branch, halts
+# review["compliance_passed"] is True/False; review["awaiting_human_review"] is True
+```
+
+Provider selection: `SS6_LLM_PROVIDER=auto|anthropic|gemini|ollama|mock` (default `auto`,
+which falls back to the deterministic `mock` when no provider is configured).
+
 ## The four phases
 
 | Phase | Owner agent | Output | Eval metric |
