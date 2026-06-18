@@ -11,9 +11,29 @@ localized codebase — here, **eleven-7**, a mock goods/products delivery app
 **LangGraph** (orchestration), **SentenceTransformers + ChromaDB** (local RAG), and
 **Anthropic Claude** (agent reasoning).
 
-> Status: **Weeks 1–4 complete — full pipeline.** Understand → Plan → Debate →
-> Execute → Review all run end to end, each with its own evaluation harness.
-> Everything is mocked/local and self-contained; no production systems are touched.
+> Status: **v1.1 — full pipeline + self-correcting loop.** Understand → Plan → Debate →
+> Execute → Review run end to end, each with its own evaluation harness. The Execute/Review
+> phases now form a **repair loop** behind a **real `tsc` + `jest` gate**, and the offline
+> retriever is a **BM25** ranker. Everything is mocked/local and self-contained by default;
+> no production systems are touched. Milestone status: [`ROADMAP.md`](ROADMAP.md).
+
+### What's new in v1.1
+
+- **Repair loop (M2):** on a gate failure the Developer is re-invoked with the violations fed
+  back, up to `SS6_MAX_REPAIR` attempts, until it converges — shown offline (`SS6_DEMO_REPAIR=1`)
+  and on a live Ollama 7B run.
+- **Real gate (M1):** `--run-tests` runs the target repo's real `tsc` + `jest` in the isolated
+  copy; plus a security scan (hardcoded secrets / dynamic `eval`).
+- **Edits to existing files (M3):** surgical anchored edits and unified diffs via
+  `git apply --3way` (idempotent, conflict-aware) instead of full-file overwrites.
+- **Stronger retrieval (M5):** BM25 + out-of-vocabulary coverage (`SS6_RETRIEVER=bm25`) lifts
+  offline **Recall@5 50%→89%, MRR 0.39→0.81**; the semantic baseline (all-MiniLM-L6-v2) reaches
+  **Recall@5 94%**. Details in [`eval/BASELINE.md`](eval/BASELINE.md).
+- **Evidence + invariance (M6):** the debate winner is validated against post-execution evidence
+  and is invariant to plan wording/order.
+- **Clarification + tracing (M7):** vague requirements trigger a clarifying question; each run
+  reports per-phase timing.
+- **Tests:** 17 → **35** passing.
 
 ## Install & quickstart
 
@@ -54,6 +74,10 @@ review  = execute(payload)                              # implements winner on a
 Provider selection: `SS6_LLM_PROVIDER=auto|anthropic|gemini|ollama|mock` (default `auto`,
 which falls back to the deterministic `mock` when no provider is configured).
 
+Useful flags: `SS6_RETRIEVER=auto|bm25|semantic|hashing`, `SS6_MAX_REPAIR=3` (repair budget),
+`SS6_DEMO_REPAIR=1` (inject a fixable violation to demonstrate the repair loop offline),
+`SS6_EDIT_MODE=1` (surgical edits to existing files), `SS6_OLLAMA_TIMEOUT=600` (seconds).
+
 ## Closed-loop demo — requirement → running feature → PR (zero cost)
 
 ![SS6 closed-loop demo](docs/ss6_demo.svg)
@@ -79,7 +103,8 @@ by spend straight from MySQL, and the change ships as a draft PR awaiting review
 See [`docs/DEMO.md`](docs/DEMO.md) for the full captured run, and
 [`eval/IMPACT.md`](eval/IMPACT.md) for the consistency benchmark
 (`python eval/impact_study.py`) — a **100% gate pass-rate across 6 requirements**,
-each yielding a compliant, test-passing change for $0.
+each yielding a compliant, test-passing change for $0, now also recording the number of
+repair attempts per requirement.
 
 ## The four phases
 
@@ -98,21 +123,31 @@ code on an **isolated git branch** (never the real repo); and the Review phase t
 runs a context.md compliance suite and **halts for human PR approval — no
 auto-merge.** Each phase ships its own evaluation harness.
 
+Execute and Review form a **repair loop**: the gate (compliance + optional real `tsc`/`jest`)
+feeds any violations back to the Developer, which regenerates — editing existing files via
+**surgical anchored edits or unified diffs** rather than overwriting them — until the gate
+passes or the `SS6_MAX_REPAIR` budget is exhausted, then halts for review.
+
 ## Layout
 
 ```
 .
 ├── context.md                  # System Blueprint: architectural + design rules
+├── ROADMAP.md                  # milestone status (M1–M7)
 ├── requirements.txt
 ├── agent_pipeline/
-│   ├── config.py               # central config (paths, model names, k)
+│   ├── config.py               # central config (paths, model names, k, repair budget)
+│   ├── api.py                  # callable API: retrieve/plan/debate/execute/run (+ repair loop)
+│   ├── review.py               # compliance + security gate; repair feedback (M1/M7)
+│   ├── vcs.py                  # isolated git copy; anchored edits + git apply --3way (M3)
 │   ├── rag/
 │   │   ├── ingest.py           # parse codebase + context.md → chunks
 │   │   ├── embeddings.py       # SentenceTransformer w/ offline fallback
+│   │   ├── lexical.py          # BM25 + OOV-coverage offline retriever (M5)
 │   │   ├── vector_store.py     # ChromaDB persistent store wrapper
-│   │   └── retriever.py        # high-level query API
-│   ├── graph/state.py          # shared LangGraph pipeline state (Week 2+)
-│   └── agents/                 # Architect/Evaluator/Developer (Week 2+)
+│   │   └── retriever.py        # high-level query API (semantic | BM25)
+│   ├── graph/state.py          # shared LangGraph pipeline state
+│   └── agents/                 # Design/Architect/Evaluator/Developer (+ repair loop, M2)
 ├── scripts/
 │   ├── init_rag.py             # Week 1 entrypoint: build the index
 │   └── query_rag.py            # manual query CLI
