@@ -26,16 +26,24 @@ look-alike distractors (snsClient vs smsClient, orderRepository vs productReposi
 money.ts vs pricing.ts, Card vs MetricTile vs Badge) + 4 hard negatives
 (GraphQL, biometric login, k8s HPA, Redis cache — all ABSENT).
 
-| Date | Embedder | Store | Recall@1 | Notes |
-|------|----------|-------|---------:|-------|
-| 2026-06-15 | hashing-fallback (offline) | numpy | ~36% (5/14) | lexical only; non-paraphrased queries (tokens/context/avatar) hit rank 1, proving files are indexed; paraphrase queries MISS as designed |
-| _pending_ | sentence-transformers/all-MiniLM-L6-v2 | chromadb | _run locally_ | **this is the real baseline** |
+18-query v2 eval set (paraphrased positives + 4 hard negatives: GraphQL, biometric
+login, k8s HPA, Redis cache — all ABSENT from the repo).
 
-To get the real number: `pip install -r requirements.txt` then
-`python eval/recall_at_k.py` (prints `semantic=True`). Re-tune `SS6_MIN_SCORE`
-against the semantic run before trusting the false-positive figure — two hard
-negatives (biometric, Redis) score ~0.31–0.40 under the **lexical** fallback and
-need the semantic model + threshold to separate cleanly.
+| Date | Retriever | Recall@1 | Recall@3 | Recall@5 | MRR | FP rate |
+|------|-----------|---------:|---------:|---------:|----:|--------:|
+| 2026-06-18 | hashing-fallback (legacy) | 33.3% | 44.4% | 50.0% | 0.39 | 50% |
+| 2026-06-18 | **BM25 + OOV coverage** (new offline default) | **77.8%** | 83.3% | 88.9% | **0.81** | **25%** |
+| 2026-06-18 | sentence-transformers/all-MiniLM-L6-v2 (semantic, chromadb) | 72.2% | **88.9%** | **94.4%** | 0.80 | 75% |
+
+**Read of the result (roadmap M5):** replacing the hashing fallback with BM25 was the
+big win — it more than doubled Recall and MRR for $0 and no model. The semantic encoder
+edges ahead at deeper cut-offs (Recall@3/@5) but, notably, BM25 **beats it at Recall@1
+and on false-positive rate**: the small MiniLM model confidently matches absent concepts
+(GraphQL/Kubernetes/Redis) by analogy, whereas the BM25 path's out-of-vocabulary
+coverage signal correctly withholds confidence. Takeaway: the strongest retriever is a
+**hybrid** — BM25 (with coverage gating) for precision and OOV rejection, semantic for
+recall at depth. Reproduce offline with `SS6_RETRIEVER=bm25 python eval/recall_at_k.py`;
+the semantic row needs `pip install -e ".[semantic]"`.
 
 ## Phase 2 — Design quality (`eval/design_quality.py`)
 
@@ -86,10 +94,20 @@ human approval and never auto-merges. Default run: generated
 `frontend/src/app/features/top-customers/top-customers.component.ts`, compliance
 **PASS**, halted for review.
 
+**Live run (2026-06-18, Ollama `qwen2.5-coder:7b`):** the real model's code **compiled
+and passed jest (tsc ✅ jest ✅)** but **failed context.md compliance** (didn't reuse the
+canonical primitives; modified a shared primitive). The **repair loop ran all 3 attempts**
+with violations fed back; the model couldn't converge, so the **gate stayed FAIL and the
+pipeline halted — non-compliant code was not passed to review** (`gate_passed=False,
+repaired=False`). The Debate, on live plans, chose **Plan A (performance)** vs the mock's
+Plan B (reuse). This live run also surfaced and fixed a gate bug (the "must export" rule
+firing on `.html`/`.scss` assets).
+
 ## Unit tests
 
-`pytest -q` → **17 passed** (RAG plumbing, normalization, Evaluator scoring,
-Developer branch+compliance, debate sensitivity). Backend pure-logic verified
+`pytest -q` → **34 passed** (RAG plumbing + BM25 retriever, normalization, Evaluator
+scoring + invariance, Developer branch+compliance, repair loop, surgical/unified-diff
+edits, security scan, clarification, tracing, debate sensitivity). Backend pure-logic verified
 separately offline: **21/21** (pricing/money/ETA) + **22/22** (coupons, points,
 refunds, payment-state-machine, restock/transfer, registry). DB integrity
 (referential + money arithmetic) validated across all four migrations.

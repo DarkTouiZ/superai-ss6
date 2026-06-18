@@ -39,6 +39,13 @@ EMBED_DIM = 384  # dimensionality of the model above (and the fallback)
 DEFAULT_TOP_K = int(os.getenv("SS6_TOP_K", "5"))
 EVAL_K_VALUES = (1, 3, 5)  # Recall@k cutoffs reported by the eval harness
 
+# Retriever selection (roadmap M5): auto | semantic | bm25 | hashing.
+#   auto     -> semantic encoder if sentence-transformers is installed, else BM25.
+#   bm25     -> force the dependency-free BM25 lexical retriever (strong offline baseline).
+#   semantic -> force the sentence-transformers path (errors if unavailable).
+#   hashing  -> the legacy hashed-bag fallback (kept only for comparison).
+RETRIEVER = os.getenv("SS6_RETRIEVER", "auto").lower()
+
 # Strict mode: when set, the embedder and vector store MUST NOT silently fall back
 # to the lexical/in-memory path — they raise instead. Use for baseline + CI runs so
 # a missing dependency fails loudly rather than reporting degraded-but-plausible
@@ -61,6 +68,10 @@ LLM_MODEL = os.getenv("SS6_LLM_MODEL", "claude-sonnet-4-5")
 #   ollama pull qwen2.5-coder:7b
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("SS6_OLLAMA_MODEL", "qwen2.5-coder:7b")
+# Per-request timeout (seconds) for an Ollama generate call. A 7B model on CPU can
+# take well over 2 minutes on the FIRST call (cold load into RAM) and for a large
+# JSON response, so the default is generous and overridable via SS6_OLLAMA_TIMEOUT.
+OLLAMA_TIMEOUT = float(os.getenv("SS6_OLLAMA_TIMEOUT", "600"))
 
 # Google Gemini: free tier (cloud). Get a key at https://aistudio.google.com/apikey
 # and set GEMINI_API_KEY (or GOOGLE_API_KEY). Flash models are free within quota.
@@ -90,3 +101,22 @@ PRIORITY_WEIGHTS = {
 EXEC_DIR = Path(os.getenv("SS6_EXEC_DIR", str(PROJECT_ROOT / "out" / "exec")))
 GIT_AUTHOR_NAME = os.getenv("SS6_GIT_NAME", "SS6 Developer Agent")
 GIT_AUTHOR_EMAIL = os.getenv("SS6_GIT_EMAIL", "ss6-agent@local")
+
+# --- Repair loop (roadmap M2) ------------------------------------------------
+# When the gate (compliance + optional tsc/jest) fails, the Developer is re-asked
+# with the violations fed back, up to MAX_REPAIR_ATTEMPTS times, before halting.
+# This is what turns "drafts code" into "converges on compliant code".
+MAX_REPAIR_ATTEMPTS = int(os.getenv("SS6_MAX_REPAIR", "3"))
+
+# Surgical edits to EXISTING files (roadmap M3): instead of overwriting an existing
+# file with a hardcoded full copy, the Developer applies anchored inserts/replaces to
+# the real file in the isolated copy (a small, reviewable diff that can't silently
+# drop unrelated code). On by default; set SS6_EDIT_MODE=0 for legacy full-file mode.
+EDIT_MODE = os.getenv("SS6_EDIT_MODE", "1").lower() in {"1", "true", "yes"}
+
+# Demo switch: make the deterministic mock emit a *fixable* violation on the first
+# attempt (a backend controller that calls fetch() directly — context.md §4), then
+# return clean code once it receives repair feedback. Lets the repair loop be shown
+# end-to-end, offline and for $0, without a live model. Off by default so normal
+# runs and the existing evals are unchanged.
+DEMO_REPAIR = os.getenv("SS6_DEMO_REPAIR", "").lower() in {"1", "true", "yes"}

@@ -71,7 +71,7 @@ class OllamaClient:
         self.provider = "ollama"
         self.is_live = True
         # Fail fast if the server/model isn't there, so get_llm can fall back.
-        tags = httpx.get(f"{self.host}/api/tags", timeout=2.0).json()
+        tags = httpx.get(f"{self.host}/api/tags", timeout=5.0).json()
         names = {m.get("name", "") for m in tags.get("models", [])}
         # Accept exact or family match (e.g. "qwen2.5-coder:7b" vs "qwen2.5-coder").
         if names and not any(self.model.split(":")[0] in n for n in names):
@@ -93,7 +93,7 @@ class OllamaClient:
                 "format": "json",  # force valid JSON output
                 "options": {"temperature": 0.2, "num_predict": max_tokens},
             },
-            timeout=120.0,
+            timeout=config.OLLAMA_TIMEOUT,
         )
         resp.raise_for_status()
         text = resp.json()["message"]["content"]
@@ -378,13 +378,39 @@ class MockLLM:
             "router.get('/stores/:storeId/low-stock', inventoryController.getLowStock);\n"
             "router.post('/inventory/transfers', validateBody(inventoryController.transferSchema), inventoryController.transferStock);\n"
         )
-        return {"files": [
+        # Repair-loop demo (roadmap M2, opt-in via SS6_DEMO_REPAIR): on the FIRST
+        # attempt, inject a *fixable* context.md §4 violation — a backend controller
+        # that calls fetch() directly instead of going through the repository. Once
+        # the gate feeds that violation back (repair_round >= 1), return clean code.
+        if config.DEMO_REPAIR and int(g.get("repair_round", 0)) == 0:
+            controller = controller.replace(
+                "    const rows = await analyticsRepo.topCustomersBySpend(limit);\n",
+                "    const rows = await analyticsRepo.topCustomersBySpend(limit);\n"
+                "    await fetch('http://internal/metrics/log');  // FIXME: bypasses repositories (context.md §4)\n",
+            )
+        files = [
             {"path": "backend/src/services/analytics.ts", "content": analytics},
             {"path": "backend/src/repositories/analyticsRepository.ts", "content": repo},
             {"path": "backend/src/controllers/analyticsController.ts", "content": controller},
             {"path": "backend/src/services/__tests__/analytics.test.ts", "content": test},
-            {"path": "backend/src/routes/index.ts", "content": routes},
-        ]}
+        ]
+        # Roadmap M3: register the route by SURGICALLY editing the real routes file
+        # (anchored insert of one import + one route), not overwriting it wholesale.
+        # Legacy full-file mode is kept for SS6_EDIT_MODE=0 and as a conflict fallback.
+        if config.EDIT_MODE:
+            files.append({
+                "path": "backend/src/routes/index.ts",
+                "edits": [
+                    {"anchor": "import * as inventoryController from '../controllers/inventoryController';",
+                     "insert_after": "\nimport * as analyticsController from '../controllers/analyticsController';"},
+                    {"anchor": "router.get('/dashboard/revenue', dashboardController.getRevenueSummary);",
+                     "insert_after": "\n// SS6-generated feature: Top Customers by Spend\n"
+                                     "router.get('/dashboard/top-customers', analyticsController.getTopCustomers);"},
+                ],
+            })
+        else:
+            files.append({"path": "backend/src/routes/index.ts", "content": routes})
+        return {"files": files}
 
 
 # --------------------------------------------------------------------------- #

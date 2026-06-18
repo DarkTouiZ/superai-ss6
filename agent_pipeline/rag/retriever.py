@@ -62,14 +62,36 @@ class Retriever:
     """
 
     def __init__(self, rebuild: bool = True) -> None:
-        self.embedder = get_embedder()
-        if rebuild:
+        self._bm25 = None
+        mode = config.RETRIEVER
+        # Probe for a semantic encoder unless BM25/hashing is explicitly forced.
+        if mode in ("bm25", "hashing"):
+            self.embedder = None if mode == "bm25" else get_embedder()
+            want_semantic = False
+        else:
+            self.embedder = get_embedder()
+            want_semantic = self.embedder.is_semantic
+
+        use_bm25 = mode == "bm25" or (mode == "auto" and not want_semantic)
+        if use_bm25:
+            from agent_pipeline.rag.lexical import BM25Index
+            self._bm25 = BM25Index.build()
+            self.embedder = self._bm25  # expose name/is_semantic for the eval report
+            self.report = IndexReport(
+                n_chunks=len(self._bm25.chunks),
+                n_files=len({c.rel_path for c in self._bm25.chunks}),
+                embedder=self._bm25.name, is_semantic=False, backend="bm25-memory",
+            )
+            self.store = None
+        elif rebuild:
             self.report, self.store = build_index(reset=True, embedder=self.embedder)
         else:
             self.report = None
             self.store = get_store(reset=False)
 
     def query(self, text: str, top_k: int = config.DEFAULT_TOP_K) -> List[Hit]:
+        if self._bm25 is not None:
+            return self._bm25.query(text, top_k=top_k)
         vec = self.embedder.encode([text])[0]
         return self.store.query(vec, top_k=top_k)
 

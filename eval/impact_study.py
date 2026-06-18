@@ -40,15 +40,23 @@ REQUIREMENTS = [
 
 
 def _loc(files: list[dict]) -> int:
-    return sum(len(f.get("content", "").splitlines()) for f in files)
+    total = 0
+    for f in files:
+        if "content" in f:
+            total += len(f["content"].splitlines())
+        edits = f.get("edits") or ([f["edit"]] if "edit" in f else [])
+        for e in edits:
+            payload = e.get("insert_after") or e.get("insert_before") or e.get("replace") or ""
+            total += len([ln for ln in payload.splitlines() if ln.strip()])
+    return total
 
 
-def run() -> dict:
+def run(run_tests: bool = False) -> dict:
     rows = []
     for req in REQUIREMENTS:
         t0 = time.time()
         payload = api.plan(req)
-        review = api.execute(payload)  # offline gate (compliance only; no node needed)
+        review = api.execute(payload, run_tests=run_tests)  # gate + repair loop
         # recover the generated files to count LOC drafted
         from agent_pipeline.agents.developer import DeveloperAgent
         winner_id = payload["debate"]["winner_id"]
@@ -61,19 +69,25 @@ def run() -> dict:
             "files_drafted": len(files),
             "loc_drafted": _loc(files),
             "compliance_passed": review["compliance_passed"],
+            "attempts": review.get("attempts", 1),
+            "repaired": review.get("repaired", False),
+            "gate_passed": review.get("gate_passed", review["compliance_passed"]),
             "seconds": round(time.time() - t0, 2),
         })
 
     n = len(rows)
-    passed = sum(1 for r in rows if r["compliance_passed"])
+    passed = sum(1 for r in rows if r["gate_passed"])
     summary = {
         "requirements": n,
         "gate_pass_rate": round(100.0 * passed / n, 1),
+        "mean_attempts": round(sum(r["attempts"] for r in rows) / n, 2),
+        "repaired_count": sum(1 for r in rows if r["repaired"]),
         "total_loc_drafted": sum(r["loc_drafted"] for r in rows),
         "mean_loc_drafted": round(sum(r["loc_drafted"] for r in rows) / n, 1),
         "mean_files_drafted": round(sum(r["files_drafted"] for r in rows) / n, 1),
         "mean_seconds": round(sum(r["seconds"] for r in rows) / n, 2),
         "provider": "mock",
+        "real_gate": bool(run_tests),
     }
     return {"summary": summary, "rows": rows}
 
@@ -90,21 +104,25 @@ def write_reports(result: dict) -> None:
         f"Across **{s['requirements']} requirements**, run on the deterministic mock "
         f"provider (zero cost, offline):",
         "",
-        f"- **Gate pass-rate:** {s['gate_pass_rate']}% (compliant, review-ready every time)",
+        f"- **Gate pass-rate:** {s['gate_pass_rate']}% (compliant"
+        f"{' + tsc/jest green' if s.get('real_gate') else ''}, review-ready every time)",
+        f"- **Mean gate attempts per requirement:** {s.get('mean_attempts', 1.0)} "
+        f"(repair loop, roadmap M2 — {s.get('repaired_count', 0)} needed a repair)",
         f"- **Lines drafted per requirement:** {s['mean_loc_drafted']} "
         f"(a human would otherwise write these from a blank file)",
         f"- **Files drafted per requirement:** {s['mean_files_drafted']}",
         f"- **Total lines drafted:** {s['total_loc_drafted']}",
         f"- **Mean wall-clock per requirement:** {s['mean_seconds']}s",
         "",
-        "| Requirement | Winner | Candidate files (RAG) | Files | LOC drafted | Gate | s |",
-        "|-------------|--------|----------------------:|------:|------------:|:----:|--:|",
+        "| Requirement | Winner | Candidate files (RAG) | Files | LOC drafted | Attempts | Gate | s |",
+        "|-------------|--------|----------------------:|------:|------------:|:-------:|:----:|--:|",
     ]
     for r in result["rows"]:
-        gate = "PASS" if r["compliance_passed"] else "FAIL"
+        gate = "PASS" if r["gate_passed"] else "FAIL"
+        att = f"{r['attempts']}{'🔁' if r['repaired'] else ''}"
         lines.append(
             f"| {r['requirement']} | {r['winner']} | {r['candidate_files']} | "
-            f"{r['files_drafted']} | {r['loc_drafted']} | {gate} | {r['seconds']} |"
+            f"{r['files_drafted']} | {r['loc_drafted']} | {att} | {gate} | {r['seconds']} |"
         )
     lines += [
         "",
@@ -121,7 +139,8 @@ def main() -> int:
     write_reports(result)
     s = result["summary"]
     print(f"requirements      : {s['requirements']}")
-    print(f"gate pass-rate    : {s['gate_pass_rate']}%")
+    print(f"gate pass-rate    : {s['gate_pass_rate']}%" + (" (incl. tsc/jest)" if s.get('real_gate') else ""))
+    print(f"mean gate attempts: {s.get('mean_attempts')} ({s.get('repaired_count')} repaired)")
     print(f"mean LOC drafted  : {s['mean_loc_drafted']} over {s['mean_files_drafted']} files")
     print(f"mean seconds/req  : {s['mean_seconds']}")
     print(f"\nWrote eval/IMPACT.md and out/impact.json")

@@ -30,7 +30,7 @@ from agent_pipeline.agents.evaluator import (
     write_debate_md,
 )
 from agent_pipeline.agents.developer import DeveloperAgent
-from agent_pipeline.review import review_files, write_review_md
+from agent_pipeline.review import review_files, write_review_md, evidence_from_files
 
 PlansLike = Union[dict, str, Path]
 
@@ -82,7 +82,12 @@ def debate(plans: PlansLike, weights: Optional[dict] = None) -> dict:
     return result_to_dict(EvaluatorAgent(weights=weights).evaluate(plan_list))
 
 
-def execute(plans: PlansLike, out_dir: Optional[Path] = None, run_tests: bool = False) -> dict:
+def execute(
+    plans: PlansLike,
+    out_dir: Optional[Path] = None,
+    run_tests: bool = False,
+    max_repair_attempts: Optional[int] = None,
+) -> dict:
     """Phases 3b-4 — implement the debate-winning plan on an isolated git branch,
     run the context.md compliance suite, and HALT for human review (never merges).
     Returns a summary; writes REVIEW.md when ``out_dir`` is given.
@@ -90,7 +95,14 @@ def execute(plans: PlansLike, out_dir: Optional[Path] = None, run_tests: bool = 
     ``run_tests=True`` additionally runs the target repo's real ``tsc`` and ``jest``
     inside the isolated copy (zero cost, local only) and folds the result into the
     gate — so the change must both be compliant and actually compile + pass tests.
+
+    Repair loop (roadmap M2): if the gate fails, the Developer is re-asked with the
+    violations fed back, up to ``max_repair_attempts`` times (default
+    ``config.MAX_REPAIR_ATTEMPTS``), before halting.
     """
+    from agent_pipeline.review import GateOutcome, gate_feedback
+    from agent_pipeline import checks
+
     payload = _coerce_payload(plans)
     plan_list = payload["plans"]
     design = payload.get("design", {})
@@ -100,15 +112,40 @@ def execute(plans: PlansLike, out_dir: Optional[Path] = None, run_tests: bool = 
         winner_id = result_to_dict(EvaluatorAgent().evaluate(plan_list))["winner_id"]
     winner = next(p for p in plan_list if p.get("id") == winner_id)
 
-    exec_result = DeveloperAgent().execute(requirement, winner, design)
-    review = review_files(exec_result.files)
+    max_attempts = max_repair_attempts or config.MAX_REPAIR_ATTEMPTS
 
-    test_results = []
-    tests_passed = True
-    if run_tests:
-        from agent_pipeline import checks
-        test_results = checks.run_backend_checks(exec_result.workdir)
-        tests_passed = checks.checks_passed(test_results)
+    def gate(files, workdir) -> "GateOutcome":
+        review = review_files(files)
+        tests = checks.run_backend_checks(workdir) if run_tests else []
+        tests_ok = checks.checks_passed(tests) if run_tests else True
+        passed = review.passed and tests_ok
+        return GateOutcome(
+            passed=passed,
+            feedback=gate_feedback(review, tests),
+            review=review,
+            tests=tests,
+        )
+
+    exec_result = DeveloperAgent().execute(
+        requirement, winner, design, gate=gate, max_attempts=max_attempts
+    )
+
+    review = exec_result.gate_review or review_files(exec_result.files)
+    test_results = exec_result.gate_tests or []
+    tests_passed = checks.checks_passed(test_results) if run_tests else True
+
+    # Roadmap M6: validate the debate winner against POST-EXECUTION evidence, not its
+    # self-declared label — a 'reuse' winner is only validated if the code actually
+    # reused canonical primitives or followed the repository+service layering.
+    evidence = evidence_from_files(exec_result.files)
+    paths_joined = " ".join(evidence["files_touched"])
+    reuse_evidence = bool(evidence["reused_components"]) or (
+        "repositories/" in paths_joined and "services/" in paths_joined
+    )
+    winner_focus = winner.get("priority_focus")
+    winner_validated = (winner_focus != "reuse") or reuse_evidence
+    evidence["winner_focus"] = winner_focus
+    evidence["winner_validated"] = winner_validated
 
     if out_dir is not None:
         write_review_md(exec_result, review, Path(out_dir), checks=test_results)
@@ -124,16 +161,76 @@ def execute(plans: PlansLike, out_dir: Optional[Path] = None, run_tests: bool = 
         "tests": [{"name": r.name, "result": r.mark, "detail": r.detail[:400]} for r in test_results],
         "tests_passed": tests_passed,
         "gate_passed": review.passed and tests_passed,
+        "attempts": exec_result.attempts,
+        "repaired": exec_result.repaired,
+        "attempt_log": exec_result.attempt_log,
+        "evidence": evidence,                      # roadmap M6 (incl. winner_validated)
+        "winner_validated": winner_validated,      # debate claim vs execution reality
         "awaiting_human_review": True,
     }
 
 
-def run(requirement: str, out_dir: Optional[Path] = None, run_tests: bool = False) -> dict:
-    """Convenience: the entire loop (plan -> execute) for one requirement."""
+# --- Clarification step (roadmap M7) ----------------------------------------- #
+_VAGUE_WORDS = {
+    "better", "improve", "improved", "fix", "update", "change", "nice", "good",
+    "stuff", "things", "it", "something", "everything", "more",
+    "make", "do", "handle", "redo", "tweak", "work", "the", "a", "an",
+}
+
+
+def needs_clarification(requirement: str) -> list[str]:
+    """Return clarifying questions when a requirement is too underspecified to act on
+    safely (roadmap M7). Empty list means it is concrete enough to proceed."""
+    r = (requirement or "").strip()
+    words = r.split()
+    questions: list[str] = []
+    if len(words) < 3:
+        questions.append(
+            "The requirement is very short — which screen or endpoint, and what data "
+            "or behavior should it provide?"
+        )
+    elif r and all(w.lower() in _VAGUE_WORDS or len(w) <= 2 for w in words):
+        questions.append(
+            "This reads as non-specific — name the feature/file to change and the "
+            "acceptance criterion (what does 'done' look like?)."
+        )
+    return questions
+
+
+def run(
+    requirement: str,
+    out_dir: Optional[Path] = None,
+    run_tests: bool = False,
+    max_repair_attempts: Optional[int] = None,
+    allow_clarify: bool = False,
+) -> dict:
+    """Convenience: the entire loop (plan -> execute) for one requirement.
+
+    With ``allow_clarify=True`` the pipeline first checks whether the requirement is
+    specific enough; if not it returns ``{"needs_clarification": [...]}`` instead of
+    guessing (roadmap M7). A per-phase timing ``trace`` is always included.
+    """
+    import time
+
+    if allow_clarify:
+        questions = needs_clarification(requirement)
+        if questions:
+            return {"needs_clarification": questions, "requirement": requirement}
+
     out = Path(out_dir) if out_dir is not None else config.PROJECT_ROOT / "out"
+    t0 = time.time()
     payload = plan(requirement, out_dir=out)
-    review = execute(payload, out_dir=out, run_tests=run_tests)
-    return {"plan": payload, "review": review}
+    t1 = time.time()
+    review = execute(payload, out_dir=out, run_tests=run_tests, max_repair_attempts=max_repair_attempts)
+    t2 = time.time()
+    trace = {
+        "plan_seconds": round(t1 - t0, 3),
+        "execute_seconds": round(t2 - t1, 3),
+        "total_seconds": round(t2 - t0, 3),
+        "attempts": review.get("attempts", 1),
+        "provider": review.get("provider"),
+    }
+    return {"plan": payload, "review": review, "trace": trace}
 
 
 # Re-export the evaluator scorer for programmatic use as a "tool".

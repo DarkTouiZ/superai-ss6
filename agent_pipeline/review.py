@@ -32,6 +32,16 @@ _COMPONENT = re.compile(r"@Component\b")
 _EXPORT = re.compile(r"\bexport\b")
 _RETURN_TYPE = re.compile(r"\)\s*:\s*[A-Za-z_][\w<>\[\].| ]*\s*(=>|\{)")
 
+# --- Security scan (roadmap M7 slice): cheap, high-signal guards on shipped code. --
+# A hardcoded credential assigned to a quoted literal, an AWS access-key id, or a
+# dynamic code-execution sink. These are hard violations: never ship them.
+_SECRET = re.compile(
+    r"(?i)\b(password|passwd|secret|api[_-]?key|access[_-]?key|auth[_-]?token|token)\b"
+    r"\s*[:=]\s*['\"][^'\"]{6,}['\"]"
+)
+_AWS_KEY = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+_DANGER = re.compile(r"\beval\s*\(|\bnew\s+Function\s*\(|child_process")
+
 # Canonical primitive class names for eleven-7 (Angular shared components). A path
 # like ".../card/card.component.ts" maps to the class "CardComponent".
 def _component_class(path: str) -> str:
@@ -69,6 +79,28 @@ class ReviewResult:
         return sum(len(f.violations) for f in self.files)
 
 
+@dataclass
+class GateOutcome:
+    """Result of one gate evaluation in the repair loop (roadmap M2): the static
+    compliance review plus any real tsc/jest results, reduced to pass/fail and a
+    flat list of human-readable feedback strings the Developer can act on."""
+    passed: bool
+    feedback: List[str]
+    review: "ReviewResult"
+    tests: list = field(default_factory=list)
+
+
+def gate_feedback(review: "ReviewResult", tests: list | None = None) -> List[str]:
+    """Flatten a review (+ optional real-check results) into actionable feedback
+    lines for the Developer's next repair attempt."""
+    lines = [f"{fr.path}: {v}" for fr in review.files for v in fr.violations]
+    for r in tests or []:
+        if not getattr(r, "skipped", False) and not getattr(r, "passed", True):
+            first = (r.detail.splitlines()[-1][:160] if getattr(r, "detail", "") else "")
+            lines.append(f"{r.name} failed: {first}")
+    return lines
+
+
 def _strip_comments(src: str) -> str:
     """Remove block and line comments so checks don't trip on commentary."""
     src = re.sub(r"/\*.*?\*/", "", src, flags=re.DOTALL)
@@ -89,12 +121,23 @@ def check_file(path: str, content: str) -> FileReview:
         return fr
 
     is_component = bool(_COMPONENT.search(code))
+    # Template/style assets (.html/.scss/.css) legitimately ship no `export` and have
+    # no functions — the "must export" / return-type rules apply only to CODE files.
+    suffix = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    is_code = suffix in {"ts", "tsx", "js", "jsx"}
 
-    # Rules that apply everywhere (front end and back end):
-    if _FETCH.search(code):
-        fr.violations.append("direct fetch() call (route via ApiService/api client — context.md §4)")
-    if not _EXPORT.search(code):
-        fr.violations.append("no export found (file ships nothing)")
+    # Rules that apply to code files (front end and back end):
+    if is_code:
+        if _FETCH.search(code):
+            fr.violations.append("direct fetch() call (route via ApiService/api client — context.md §4)")
+        if not _EXPORT.search(code):
+            fr.violations.append("no export found (file ships nothing)")
+
+    # Security scan (roadmap M7): hard-fail on hardcoded secrets or dynamic eval.
+    if _SECRET.search(code) or _AWS_KEY.search(code):
+        fr.violations.append("hardcoded credential/secret literal (use env/config — security)")
+    if _DANGER.search(code):
+        fr.violations.append("dynamic code execution (eval/new Function/child_process — security)")
 
     # Front-end-component-specific rules (design tokens, primitive reuse, HttpClient):
     if is_component:
@@ -109,14 +152,32 @@ def check_file(path: str, content: str) -> FileReview:
         if "tokens" not in code and "var(--" not in code:
             fr.warnings.append("does not reference design tokens")
 
-    if not _RETURN_TYPE.search(code):
+    if is_code and not _RETURN_TYPE.search(code):
         fr.warnings.append("no explicit return type on an exported function")
     return fr
 
 
 def review_files(files: List[dict]) -> ReviewResult:
     """files: [{path, content}] (content as written)."""
-    return ReviewResult(files=[check_file(f["path"], f["content"]) for f in files])
+    return ReviewResult(files=[check_file(f["path"], f.get("content", "")) for f in files])
+
+
+def evidence_from_files(files: List[dict]) -> dict:
+    """Roadmap M6 — score the change against POST-EXECUTION facts, not the plan's
+    prose: which canonical primitives / shared building blocks the generated code
+    actually reuses, and how many files it touched. This is observable evidence the
+    Debate's reuse claim was honored, independent of how the plan was worded."""
+    reused = set()
+    for f in files:
+        code = _strip_comments(f.get("content", ""))
+        for name in (_PRIMITIVE_NAMES | _FEATURE_NAMES):
+            if name in code:
+                reused.add(name)
+    return {
+        "reused_components": sorted(reused),
+        "files_touched": [f.get("path") for f in files],
+        "n_files": len(files),
+    }
 
 
 def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=None) -> Path:
@@ -138,6 +199,22 @@ def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=Non
         f"- Files changed: {', '.join(exec_result.changed_files) or '—'}",
         "",
     ]
+    attempt_log = getattr(exec_result, "attempt_log", []) or []
+    if len(attempt_log) > 1 or any(not a.get("passed") for a in attempt_log):
+        lines += ["## Repair loop (roadmap M2)", ""]
+        lines.append(
+            f"The gate ran {len(attempt_log)} attempt(s); the Developer was re-asked "
+            f"with the violations fed back until the gate passed (max "
+            f"{getattr(exec_result, 'max_attempts', len(attempt_log))})."
+        )
+        lines.append("")
+        for a in attempt_log:
+            icon = "✅" if a.get("passed") else "🔁"
+            head = f"- {icon} **Attempt {a.get('round')}** — {'PASS' if a.get('passed') else 'failed, repairing'}"
+            lines.append(head)
+            for v in a.get("violations", [])[:8]:
+                lines.append(f"    - {v}")
+        lines.append("")
     if checks:
         lines += ["## Real checks (tsc + jest, run in the isolated copy)", ""]
         for c in checks:

@@ -28,3 +28,7 @@ target_repo/**/.env
 
 # OS
 .DS_Store
+
+# SS6 demo/run artifacts (regenerated)
+out_live*/
+out_repair_demo/
