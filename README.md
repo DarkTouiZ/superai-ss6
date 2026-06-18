@@ -1,5 +1,9 @@
 # SuperAI SS6 — Autonomous AI Software Engineering Pipeline
 
+[![CI](https://github.com/DarkTouiZ/superai-ss6/actions/workflows/ci.yml/badge.svg)](https://github.com/DarkTouiZ/superai-ss6/actions/workflows/ci.yml)
+![cost](https://img.shields.io/badge/cost-%240%20(offline%20mock)-brightgreen)
+![python](https://img.shields.io/badge/python-3.10%2B-blue)
+
 An MVP multi-agent pipeline that ingests a requirement, plans the architecture,
 debates competing technical approaches, and executes the winning plan against a
 localized codebase — here, **eleven-7**, a mock goods/products delivery app
@@ -52,6 +56,8 @@ which falls back to the deterministic `mock` when no provider is configured).
 
 ## Closed-loop demo — requirement → running feature → PR (zero cost)
 
+![SS6 closed-loop demo](docs/ss6_demo.svg)
+
 The gate can run the target repo's **real `tsc` + `jest`** (not just syntactic
 checks) inside the isolated branch copy:
 
@@ -69,6 +75,11 @@ a machine with Docker running: generate → real gate → apply → rebuild the 
 deterministic mock provider and local tooling, so the demo is **$0** and needs no API
 key. Live example: `GET /api/v1/dashboard/top-customers` returns the top customers
 by spend straight from MySQL, and the change ships as a draft PR awaiting review.
+
+See [`docs/DEMO.md`](docs/DEMO.md) for the full captured run, and
+[`eval/IMPACT.md`](eval/IMPACT.md) for the consistency benchmark
+(`python eval/impact_study.py`) — a **100% gate pass-rate across 6 requirements**,
+each yielding a compliant, test-passing change for $0.
 
 ## The four phases
 

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="494" viewBox="0 0 820 494" font-family="SFMono-Regular,Consolas,Menlo,monospace">
+<rect x="0" y="0" width="820" height="494" rx="10" fill="#0d1117" stroke="#30363d"/>
+<rect x="0" y="0" width="820" height="34" rx="10" fill="#161b22"/>
+<rect x="0" y="24" width="820" height="12" fill="#161b22"/>
+<circle cx="20" cy="17" r="6" fill="#ff5f56"/>
+<circle cx="40" cy="17" r="6" fill="#ffbd2e"/>
+<circle cx="60" cy="17" r="6" fill="#27c93f"/>
+<text x="410.0" y="22" fill="#8b949e" font-size="13" text-anchor="middle">ss6 — closed-loop demo ($0, offline)</text>
+<text x="22" y="58" fill="#7ee787" font-size="14" font-weight="700" xml:space="preserve">$ ss6 run "Add a Top Customers by Spend analytics endpoint" --run-tests</text>
+<text x="22" y="81" fill="#8b949e" font-size="14" xml:space="preserve">Phase 1 retrieval · Phase 2 design+plans · Phase 3 debate ...</text>
+<text x="22" y="104" fill="#c9d1d9" font-size="14" xml:space="preserve">Winner     : Plan B (reuse)</text>
+<text x="22" y="127" fill="#c9d1d9" font-size="14" xml:space="preserve">Branch     : ss6/add-a-top-customers-by-spend-analytics-e</text>
+<text x="22" y="150" fill="#56d364" font-size="14" xml:space="preserve">   PASS  tsc  (real check)     compiles against eleven-7</text>
+<text x="22" y="173" fill="#56d364" font-size="14" xml:space="preserve">   PASS  jest (real check)     generated unit test passes</text>
+<text x="22" y="196" fill="#56d364" font-size="14" font-weight="700" xml:space="preserve">Gate       : PASS  (compliance + tsc + jest)</text>
+<text x="22" y="219" fill="#e3b341" font-size="14" xml:space="preserve">halted for human review - nothing merged</text>
+<text x="22" y="265" fill="#7ee787" font-size="14" font-weight="700" xml:space="preserve">$ curl .../api/v1/dashboard/top-customers?limit=3</text>
+<text x="22" y="288" fill="#79c0ff" font-size="14" xml:space="preserve">{ "topCustomers": [</text>
+<text x="22" y="311" fill="#79c0ff" font-size="14" xml:space="preserve">  { "full_name": "Aiko Tanaka",   "spend_satang": "47700" },</text>
+<text x="22" y="334" fill="#79c0ff" font-size="14" xml:space="preserve">  { "full_name": "Somchai Jaidee", "spend_satang": "40900" },</text>
+<text x="22" y="357" fill="#79c0ff" font-size="14" xml:space="preserve">  { "full_name": "David Carter",   "spend_satang": "40300" } ] }</text>
+<text x="22" y="380" fill="#8b949e" font-size="14" xml:space="preserve">matches direct SQL exactly - live against MySQL</text>
+<text x="22" y="426" fill="#7ee787" font-size="14" font-weight="700" xml:space="preserve">$ gh pr create --draft</text>
+<text x="22" y="449" fill="#d2a8ff" font-size="14" xml:space="preserve">https://github.com/DarkTouiZ/superai-ss6/pull/1   (draft)</text>
+</svg>

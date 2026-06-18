@@ -1,0 +1,48 @@
+name: CI
+
+# Free, deterministic CI: installs the package, runs the unit tests and all four
+# phase evaluation harnesses on the offline mock provider (no API key, no network).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      SS6_LLM_PROVIDER: mock
+      SS6_CHROMA_DIR: /tmp/ss6chroma
+      SS6_EXEC_DIR: /tmp/ss6exec
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install (with dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Unit tests (pytest)
+        run: pytest -q
+
+      - name: Pipeline — design + plans + debate
+        run: ss6 plan "Add a Top Customers by Spend analytics endpoint" --out ./out
+
+      - name: Eval — design quality
+        run: python eval/design_quality.py --design out/plans.json
+
+      - name: Eval — plan quality
+        run: python eval/plan_quality.py --plans out/plans.json
+
+      - name: Eval — debate (weight sensitivity)
+        run: python eval/debate_quality.py --plans out/plans.json
+
+      - name: Eval — execution gate discrimination
+        run: python eval/execution_quality.py

@@ -1,0 +1,67 @@
+{
+  "summary": {
+    "requirements": 6,
+    "gate_pass_rate": 100.0,
+    "total_loc_drafted": 654,
+    "mean_loc_drafted": 109.0,
+    "mean_files_drafted": 5.0,
+    "mean_seconds": 1.77,
+    "provider": "mock"
+  },
+  "rows": [
+    {
+      "requirement": "Add a Top Customers by Spend analytics endpoint",
+      "winner": "B/reuse",
+      "candidate_files": 6,
+      "files_drafted": 5,
+      "loc_drafted": 109,
+      "compliance_passed": true,
+      "seconds": 3.17
+    },
+    {
+      "requirement": "Add a low-stock reorder alert screen for store managers",
+      "winner": "B/reuse",
+      "candidate_files": 6,
+      "files_drafted": 5,
+      "loc_drafted": 109,
+      "compliance_passed": true,
+      "seconds": 1.48
+    },
+    {
+      "requirement": "Let customers redeem ALL Member points at checkout",
+      "winner": "B/reuse",
+      "candidate_files": 5,
+      "files_drafted": 5,
+      "loc_drafted": 109,
+      "compliance_passed": true,
+      "seconds": 1.47
+    },
+    {
+      "requirement": "Add a daily revenue-by-store report endpoint",
+      "winner": "B/reuse",
+      "candidate_files": 6,
+      "files_drafted": 5,
+      "loc_drafted": 109,
+      "compliance_passed": true,
+      "seconds": 1.49
+    },
+    {
+      "requirement": "Add a courier performance leaderboard",
+      "winner": "B/reuse",
+      "candidate_files": 6,
+      "files_drafted": 5,
+      "loc_drafted": 109,
+      "compliance_passed": true,
+      "seconds": 1.53
+    },
+    {
+      "requirement": "Add order cancellation with an automatic refund flow",
+      "winner": "A/performance",
+      "candidate_files": 7,
+      "files_drafted": 5,
+      "loc_drafted": 109,
+      "compliance_passed": true,
+      "seconds": 1.46
+    }
+  ]
+}
