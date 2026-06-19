@@ -1,20 +1,21 @@
 {
-  "requirement": "Add a 'Top Customers by Spend' screen to the eleven-7 ops console that lists each customer with their total spend and loyalty tier, reusing the canonical Angular primitives and fetching through ApiService, respecting the design tokens and integer-satang money rules.",
+  "requirement": "Add a Top Customers by Spend analytics endpoint",
   "provider": "mock",
   "is_live": false,
   "candidate_files": [
     "context.md",
-    "target_repo/backend/src/services/notificationService.ts",
-    "target_repo/README.md",
-    "target_repo/backend/src/controllers/supportController.ts",
-    "target_repo/backend/src/controllers/orderController.ts"
+    "target_repo/backend/src/services/promotionService.ts",
+    "target_repo/frontend/src/app/app.component.ts",
+    "target_repo/backend/src/services/errors.ts",
+    "target_repo/backend/jest.config.js",
+    "target_repo/backend/src/controllers/dashboardController.ts"
   ],
   "plans": [
     {
       "id": "A",
       "title": "Performance-optimized",
       "priority_focus": "performance",
-      "summary": "Satisfy 'Add a 'Top Customers by Spend' screen to the eleven-7 ops console that lists each customer with their total spend and loyalty tier, reusing the canonical Angular primitives and fetching through ApiService, respecting the design tokens and integer-satang money rules.' with a server-side aggregate endpoint and a cached selector.",
+      "summary": "Satisfy 'Add a Top Customers by Spend analytics endpoint' with a server-side aggregate endpoint and a cached selector.",
       "steps": [
         "Add a top-customers SQL aggregate in the order repository.",
         "Expose it via a dashboard controller route; paginate results.",
@@ -23,7 +24,7 @@
       ],
       "files_touched": [
         "target_repo/frontend/src/app/features/top-customers/top-customers.component.ts",
-        "target_repo/backend/src/services/notificationService.ts"
+        "target_repo/backend/src/services/promotionService.ts"
       ],
       "primitives_reused": [
         "target_repo/frontend/src/app/shared/components/avatar/avatar.component.ts",
@@ -44,7 +45,7 @@
       "id": "B",
       "title": "Maintainability / component reuse",
       "priority_focus": "reuse",
-      "summary": "Satisfy 'Add a 'Top Customers by Spend' screen to the eleven-7 ops console that lists each customer with their total spend and loyalty tier, reusing the canonical Angular primitives and fetching through ApiService, respecting the design tokens and integer-satang money rules.' by composing existing primitives and the ApiService.",
+      "summary": "Satisfy 'Add a Top Customers by Spend analytics endpoint' by composing existing primitives and the ApiService.",
       "steps": [
         "Compose the new screen from the canonical Card + MetricTile + Badge primitives.",
         "Fetch data through ApiService only; add no new HTTP code.",
@@ -76,7 +77,7 @@
       "id": "C",
       "title": "Pragmatic / fastest",
       "priority_focus": "speed",
-      "summary": "Ship 'Add a 'Top Customers by Spend' screen to the eleven-7 ops console that lists each customer with their total spend and loyalty tier, reusing the canonical Angular primitives and fetching through ApiService, respecting the design tokens and integer-satang money rules.' fastest with a minimal component over the existing orders endpoint.",
+      "summary": "Ship 'Add a Top Customers by Spend analytics endpoint' fastest with a minimal component over the existing orders endpoint.",
       "steps": [
         "Call the existing orders endpoint via ApiService and aggregate client-side.",
         "Reuse the Card primitive; skip extra abstraction."
@@ -100,7 +101,7 @@
     }
   ],
   "design": {
-    "requirement": "Add a 'Top Customers by Spend' screen to the eleven-7 ops console that lists each customer with their total spend and loyalty tier, reusing the canonical Angular primitives and fetching through ApiService, respecting the design tokens and integer-satang money rules.",
+    "requirement": "Add a Top Customers by Spend analytics endpoint",
     "uml_mermaid": "classDiagram\n    class TopCustomersComponent {\n        +rows: TopCustomerRow[]\n        +ngOnInit() void\n    }\n    class ApiService {\n        +getTopCustomers() Observable~TopCustomerRow[]~\n    }\n    TopCustomersComponent --> CardComponent : composes\n    TopCustomersComponent --> MetricTileComponent : composes\n    TopCustomersComponent --> ApiService : uses\n    TopCustomersComponent --> MoneyPipe : formats",
     "api_spec": [
       "ApiService.getTopCustomers(): Observable<TopCustomerRow[]>",
@@ -144,20 +145,21 @@
       "metric-tile"
     ],
     "services_used": [
-      "target_repo/backend/src/services/notificationService.ts"
+      "target_repo/backend/src/services/promotionService.ts",
+      "target_repo/backend/node_modules/zod/v4/classic/errors.js"
     ]
   },
   "debate": {
     "weights": {
-      "reuse": 0.4000000000000001,
-      "blueprint": 0.30000000000000004,
-      "performance": 0.20000000000000004,
-      "speed": 0.10000000000000002
+      "reuse": 0.4,
+      "blueprint": 0.3,
+      "performance": 0.2,
+      "speed": 0.1
     },
     "winner_id": "B",
     "winner_focus": "reuse",
-    "margin": 0.1738,
-    "rationale": "Plan B ('reuse') wins with weighted score 0.7313 (margin 0.1738). Under the active priorities the dominant weight is 'reuse' (0.40); Plan B scores 1.00 there.",
+    "margin": 0.2487,
+    "rationale": "Plan B ('reuse') wins with weighted score 0.7312 (margin 0.2487). Under the active priorities the dominant weight is 'reuse' (0.40); Plan B scores 1.00 there.",
     "ranking": [
       {
         "plan_id": "B",
@@ -168,18 +170,18 @@
           "performance": 0.0,
           "speed": 0.3125
         },
-        "weighted_total": 0.7313
+        "weighted_total": 0.7312
       },
       {
         "plan_id": "A",
         "focus": "performance",
         "subscores": {
           "reuse": 0.4,
-          "blueprint": 0.575,
+          "blueprint": 0.325,
           "performance": 1.0,
           "speed": 0.25
         },
-        "weighted_total": 0.5575
+        "weighted_total": 0.4825
       },
       {
         "plan_id": "C",
