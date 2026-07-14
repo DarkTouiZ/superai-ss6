@@ -22,6 +22,8 @@ from typing import Optional, Union
 
 from agent_pipeline import config, normalize
 from agent_pipeline import environment as environment_mod
+from agent_pipeline import grounding as grounding_mod
+from agent_pipeline import impact as impact_mod
 from agent_pipeline.rag.retriever import Retriever
 from agent_pipeline.agents.design import DesignAgent, write_design_md
 from agent_pipeline.agents.architect import ArchitectAgent, write_outputs
@@ -47,16 +49,24 @@ def plan(requirement: str, out_dir: Optional[Path] = None) -> dict:
     winner). If ``out_dir`` is given, also writes DESIGN.md / PLANS.md / DEBATE.md.
     """
     retriever = Retriever(rebuild=True)
-    design = DesignAgent(retriever=retriever).generate(requirement)
-    plan_set = ArchitectAgent(retriever=retriever).generate(requirement)
+    # One grounding snapshot per run, shared by Design and Architect so their view of
+    # the repository is identical, and carrying the actual retrieved code (spec §20.2).
+    chunks = grounding_mod.build_grounding(retriever, requirement)
+
+    # Load the operational environment contract (spec §19.4) and produce the pre-planning
+    # change-impact analysis (spec §20.3) the Architect must respond to.
+    env = environment_mod.load_environment()
+    impact = impact_mod.analyze_impact(requirement, chunks, environment=env)
+    impact_block = impact_mod.impact_prompt_block(impact)
+
+    design = DesignAgent(retriever=retriever).generate(requirement, grounding=chunks)
+    plan_set = ArchitectAgent(retriever=retriever).generate(
+        requirement, grounding=chunks, impact_block=impact_block
+    )
 
     plan_set.plans = normalize.normalize_plans(plan_set.plans)
     design.artifacts = normalize.normalize_design(design.artifacts)
     debate = EvaluatorAgent().evaluate(plan_set.plans)
-
-    # Load the operational environment contract and record its version/freshness so the
-    # plan is auditable against the map it was grounded in (spec §19.4).
-    env = environment_mod.load_environment()
 
     payload = {
         "requirement": plan_set.requirement,
@@ -67,16 +77,21 @@ def plan(requirement: str, out_dir: Optional[Path] = None) -> dict:
         "design": design.artifacts,
         "debate": result_to_dict(debate),
         "environment": env.summary(),
+        "grounding": grounding_mod.snapshot(chunks),
+        "impact": impact.to_dict(),
     }
     if out_dir is not None:
         out_dir = Path(out_dir)
         write_design_md(design, out_dir)
         json_path, _ = write_outputs(plan_set, out_dir, design=design.artifacts)
         write_debate_md(debate, out_dir)
-        # fold the debate result + environment record into plans.json on disk
+        impact_mod.write_impact_md(impact, out_dir, requirement=requirement)
+        # fold the debate result + environment + grounding + impact into plans.json
         data = json.loads(json_path.read_text(encoding="utf-8"))
         data["debate"] = payload["debate"]
         data["environment"] = payload["environment"]
+        data["grounding"] = payload["grounding"]
+        data["impact"] = payload["impact"]
         json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return payload
 

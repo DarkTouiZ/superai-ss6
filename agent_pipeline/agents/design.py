@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from agent_pipeline import config
+from agent_pipeline import config, grounding as grounding_mod
 from agent_pipeline.llm import get_llm
 from agent_pipeline.rag.retriever import Retriever
 
@@ -62,7 +62,7 @@ class Design:
     raw: str = ""
 
 
-def _build_user_prompt(requirement: str, candidate_files: List[str]) -> str:
+def _build_user_prompt(requirement: str, candidate_files: List[str], code_block: str = "") -> str:
     primitives = sorted(config.CANONICAL_PRIMITIVES & set(candidate_files)) or sorted(
         config.CANONICAL_PRIMITIVES
     )
@@ -75,10 +75,13 @@ def _build_user_prompt(requirement: str, candidate_files: List[str]) -> str:
         "services": services,
     }
     blueprint = config.CONTEXT_FILE.read_text(encoding="utf-8")
+    code_section = f"{code_block}\n\n" if code_block else ""
     return (
         f"REQUIREMENT:\n{requirement}\n\n"
         f"SYSTEM BLUEPRINT (context.md):\n{blueprint}\n\n"
         f"CANDIDATE FILES (from RAG retrieval):\n" + "\n".join(candidate_files) + "\n\n"
+        # Actual retrieved source (spec §20.1); before the mock marker so mock is unaffected.
+        f"{code_section}"
         f"<<GROUNDING:{json.dumps(grounding)}>>\n"
     )
 
@@ -88,9 +91,17 @@ class DesignAgent:
         self.retriever = retriever or Retriever(rebuild=True)
         self.llm = get_llm()
 
-    def generate(self, requirement: str, top_k: int = 8) -> Design:
-        candidate_files = self.retriever.retrieve_paths(requirement, top_k=top_k)
-        user = _build_user_prompt(requirement, candidate_files)
+    def generate(self, requirement: str, top_k: int = 8, grounding=None) -> Design:
+        """Generate design artifacts. When ``grounding`` (a shared GroundingChunk
+        snapshot) is supplied the actual retrieved code is injected so the design is
+        anchored to the implementation (spec §20); otherwise falls back to path-only
+        retrieval for backward compatibility."""
+        if grounding is None:
+            grounding = grounding_mod.build_grounding(self.retriever, requirement, top_k=top_k)
+        candidate_files = grounding_mod.candidate_files(grounding) or \
+            self.retriever.retrieve_paths(requirement, top_k=top_k)
+        code_block = grounding_mod.to_prompt_block(grounding) if grounding else ""
+        user = _build_user_prompt(requirement, candidate_files, code_block)
         resp = self.llm.complete(SYSTEM_PROMPT, user)
         artifacts = self._parse(resp.text)
         return Design(
