@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "superai-ss6"
-version = "1.0.0"
+version = "1.2.0"
 description = "SuperAI SS6 — an autonomous AI software-engineering pipeline (Understand → Plan → Debate → Execute → Review) with local RAG and a context-aware compliance gate."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,8 +33,8 @@ all = [
 ss6 = "agent_pipeline.cli:main"
 
 [project.urls]
-Homepage = "https://example.com/superai-ss6"
-Repository = "https://example.com/superai-ss6"
+Homepage = "https://github.com/DarkTouiZ/superai-ss6"
+Repository = "https://github.com/DarkTouiZ/superai-ss6"
 
 [tool.setuptools]
 # Ship the importable package; the target_repo/ test-bed and eval/ harnesses stay

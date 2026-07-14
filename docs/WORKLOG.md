@@ -130,6 +130,21 @@ tested commit on branch `ss6/spec-upgrade` (branched from `main`).
 - **Verify:** full suite (pending run); REVIEW.md inspected end-to-end — all §23 sections
   present with the criteria checklist populated.
 
-### Next up
-- Phase 7 (honest benchmark + docs/version/LICENSE/LangGraph/clarification alignment, spec
-  §22.5–22.6). Then the spec §25 definition-of-done review across all phases.
+### Phase 7 — honest evaluation + docs alignment (spec §22.5–22.6) — commit `<pending>`
+- **§22.5 honest benchmark:** `eval/impact_study.py` now counts LOC/files from the **exact
+  executed candidate** (committed diff via `git diff --numstat`), not a second
+  `generate_files()` call; the headline metric is renamed **gate-pass CONSISTENCY** (not
+  requirement-satisfaction) with an explicit note that the mock emits a constant template;
+  reports run-id, actual provider, live flag, LOC min/max, and flags
+  `live_requested_but_mock` (no silent live→mock laundering).
+- **§22.6 claim alignment:** version unified to **1.2.0** (`__init__` + `pyproject`); added
+  the missing **LICENSE** (MIT, as declared); replaced `example.com` placeholder URLs with
+  the real repo; README's LangGraph claim corrected to "imperative staged agent pipeline"
+  (no `StateGraph` exists — LangGraph is an optional extra); clarification wired into the CLI
+  as opt-in `ss6 run --clarify` and the README claim matched to it.
+- **Verify:** full suite (pending); docs-alignment tests assert version/LICENSE/URLs/clarify.
+
+### Definition of done (spec §25) — all 8 phases complete
+All P1 safety defects fixed; environment.md + ProblemPacket + grounding + risk-based HITL +
+evidence-complete REVIEW.md in place; mock labeled as consistency not feature-quality; public
+claims aligned. Branch `ss6/spec-upgrade` holds one reviewable, tested commit per phase.

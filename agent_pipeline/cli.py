@@ -114,7 +114,8 @@ def _cmd_execute(args: argparse.Namespace) -> int:
 def _cmd_run(args: argparse.Namespace) -> int:
     req = _resolve_requirement_arg(args)
     result = api.run(req, out_dir=args.out, run_tests=args.run_tests,
-                     require_approval=True, approved_by=args.approved_by)
+                     require_approval=True, approved_by=args.approved_by,
+                     allow_clarify=args.clarify)
     if result.get("needs_clarification"):
         print("Need clarification before planning:")
         for q in result["needs_clarification"]:
@@ -204,6 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     pn.add_argument("--out", type=Path, default=config.PROJECT_ROOT / "out")
     pn.add_argument("--run-tests", action="store_true", help="also run the repo's real tsc + jest in the isolated copy")
     pn.add_argument("--approved-by", help="record an explicit human approval and proceed past the risk gate (spec §21)")
+    pn.add_argument("--clarify", action="store_true", help="ask clarifying questions first if the requirement/packet is underspecified")
     pn.set_defaults(func=_cmd_run)
 
     pv = sub.add_parser("eval", help="run an eval harness")

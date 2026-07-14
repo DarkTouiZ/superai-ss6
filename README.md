@@ -8,14 +8,33 @@ An MVP multi-agent pipeline that ingests a requirement, plans the architecture,
 debates competing technical approaches, and executes the winning plan against a
 localized codebase — here, **eleven-7**, a mock goods/products delivery app
 (Node.js + Angular + MySQL + AWS SNS/SQS/SMS) in `target_repo/`. Built on
-**LangGraph** (orchestration), **SentenceTransformers + ChromaDB** (local RAG), and
-**Anthropic Claude** (agent reasoning).
+an **imperative staged agent pipeline** (LangGraph is an optional orchestration extra —
+the shared pipeline state lives in `graph/state.py`; there is no `StateGraph` yet),
+**SentenceTransformers + ChromaDB** (local RAG), and **Anthropic Claude** (agent reasoning).
 
-> Status: **v1.1 — full pipeline + self-correcting loop.** Understand → Plan → Debate →
-> Execute → Review run end to end, each with its own evaluation harness. The Execute/Review
-> phases now form a **repair loop** behind a **real `tsc` + `jest` gate**, and the offline
-> retriever is a **BM25** ranker. Everything is mocked/local and self-contained by default;
-> no production systems are touched. Milestone status: [`ROADMAP.md`](ROADMAP.md).
+> Status: **v1.2 — structured intake + grounded, human-accountable delivery loop.**
+> Understand → Plan → Debate → Execute → Review run end to end, each with its own evaluation
+> harness. The Execute/Review phases form a **repair loop** behind a **real `tsc` + `jest`
+> gate**. v1.2 adds a structured **ProblemPacket** intake, an **`environment.md`** system
+> contract, **real code grounding** + impact analysis, a **risk-based human-approval gate**,
+> and an **evidence-complete `REVIEW.md`**. Everything is mocked/local and self-contained by
+> default; no production systems are touched. Milestone status: [`ROADMAP.md`](ROADMAP.md).
+
+### What's new in v1.2
+
+- **Structured intake (ProblemPacket):** `ss6 plan|run --intake feature.(json|md)` turns a
+  vague requirement into a measurable packet (goal, acceptance criteria, constraints,
+  readiness, open questions). Raw `ss6 plan "..."` still works.
+- **`environment.md` contract:** a human-reviewed system map with freshness/validation,
+  distinct from the normative `context.md`.
+- **Real code grounding + impact analysis:** planners receive actual retrieved code
+  (cited `path:line`), and a pre-planning `IMPACT.md` proposes a risk level.
+- **Risk-based HITL:** medium/high-risk changes must be approved (`ss6 approve`) before
+  execution; nothing ever auto-merges.
+- **Evidence-complete `REVIEW.md`:** acceptance-criteria checklist, grounding, approval,
+  honest `PASS/FAIL/UNVERIFIED` checks, and explicit human decisions.
+- **Safety fixes:** path-containment, repair-loop isolation, and honest gate status.
+- **Tests:** 35 → **110** passing.
 
 ### What's new in v1.1
 
@@ -31,8 +50,9 @@ localized codebase — here, **eleven-7**, a mock goods/products delivery app
   **Recall@5 94%**. Details in [`eval/BASELINE.md`](eval/BASELINE.md).
 - **Evidence + invariance (M6):** the debate winner is validated against post-execution evidence
   and is invariant to plan wording/order.
-- **Clarification + tracing (M7):** vague requirements trigger a clarifying question; each run
-  reports per-phase timing.
+- **Clarification + tracing (M7):** with `ss6 run --clarify` (opt-in) a vague requirement or
+  an under-specified packet returns clarifying questions instead of guessing; each run reports
+  per-phase timing.
 - **Tests:** 17 → **35** passing.
 
 ## Install & quickstart
