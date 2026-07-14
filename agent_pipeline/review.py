@@ -187,7 +187,7 @@ def evidence_from_files(files: List[dict]) -> dict:
 
 
 def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=None,
-                    environment: dict | None = None) -> Path:
+                    environment: dict | None = None, approval: dict | None = None) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     md_path = out_dir / "REVIEW.md"
     checks = checks or []
@@ -237,6 +237,24 @@ def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=Non
             lines.append(f"  - ⚠️ {w}")
         if not environment.get("present", True):
             lines.append("  - ⚠️ environment.md absent — operational facts are unverified")
+        lines.append("")
+    if approval is not None:
+        req = approval.get("pre_execution_approval_required")
+        rec = approval.get("pre_execution_approval_recorded")
+        state = "not required" if not req else ("recorded ✅" if rec else "MISSING ⚠️")
+        lines += [
+            "## Risk & human approval (spec §21)",
+            "",
+            f"- Effective risk: **{approval.get('risk_level', 'unknown')}** — "
+            f"{'; '.join(approval.get('risk_reasons', []) or ['n/a'])}",
+            f"- Pre-execution approval: **{state}**"
+            + (f" (enforced={approval.get('enforced')})" if req else ""),
+            "- Final human review before merge: **required** — the pipeline never auto-merges.",
+        ]
+        m = approval.get("matched_approval")
+        if m:
+            lines.append(f"  - approved by `{m.get('approved_by')}` at {m.get('approved_at')} "
+                         f"(plan {m.get('plan_id')}, packet v{m.get('packet_version')})")
         lines.append("")
     attempt_log = getattr(exec_result, "attempt_log", []) or []
     if len(attempt_log) > 1 or any(not a.get("passed") for a in attempt_log):

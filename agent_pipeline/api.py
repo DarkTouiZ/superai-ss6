@@ -141,6 +141,8 @@ def execute(
     out_dir: Optional[Path] = None,
     run_tests: bool = False,
     max_repair_attempts: Optional[int] = None,
+    require_approval: bool = False,
+    approved_by: Optional[str] = None,
 ) -> dict:
     """Phases 3b-4 — implement the debate-winning plan on an isolated git branch,
     run the context.md compliance suite, and HALT for human review (never merges).
@@ -153,9 +155,16 @@ def execute(
     Repair loop (roadmap M2): if the gate fails, the Developer is re-asked with the
     violations fed back, up to ``max_repair_attempts`` times (default
     ``config.MAX_REPAIR_ATTEMPTS``), before halting.
+
+    Risk-based HITL (spec §21): with ``require_approval=True`` (the CLI default), a
+    medium/high-risk change refuses to start without a matching recorded approval —
+    it does not run the Developer, it halts and asks for one. ``approved_by`` records
+    an explicit human approval (a CLI flag capturing a human action, stored in
+    ``out/approvals.json``) and then proceeds. The Python API defaults to
+    ``require_approval=False`` so eval/benchmark callers are unaffected.
     """
     from agent_pipeline.review import GateOutcome, gate_feedback
-    from agent_pipeline import checks
+    from agent_pipeline import checks, hitl
 
     payload = _coerce_payload(plans)
     plan_list = payload["plans"]
@@ -165,6 +174,42 @@ def execute(
     if not winner_id:
         winner_id = result_to_dict(EvaluatorAgent().evaluate(plan_list))["winner_id"]
     winner = next(p for p in plan_list if p.get("id") == winner_id)
+
+    # --- Risk-based HITL gate (spec §21) — before any code is generated ------------
+    impact_d = payload.get("impact") or {}
+    packet_version = (payload.get("problem_packet") or {}).get("version", 1)
+    env_version = (payload.get("environment") or {}).get("environment_version", 0)
+    store_dir = Path(out_dir) if out_dir is not None else config.PROJECT_ROOT / "out"
+    if require_approval:
+        risk, risk_reasons = hitl.effective_risk(impact_d, winner)
+        if approved_by and hitl.requires_pre_execution_approval(risk):
+            # A CLI flag capturing an explicit human decision — recorded, not inferred.
+            hitl.record_approval(store_dir, hitl.HumanApproval(
+                stage="plan", decision="approved", approved_by=approved_by,
+                packet_version=packet_version, plan_id=winner.get("id"),
+                environment_version=env_version, risk_level=risk,
+                notes="approved via ss6 --approved-by flag",
+            ))
+        check = hitl.check_execution_allowed(
+            store_dir, impact=impact_d, chosen_plan=winner,
+            packet_version=packet_version, environment_version=env_version,
+        )
+        if check.blocked:
+            return {
+                "awaiting_human_review": True,
+                "approval_required": True,
+                "approval_blocked": True,
+                "risk_level": check.risk_level,
+                "risk_reasons": check.reasons,
+                "winner_id": winner.get("id"),
+                "packet_version": packet_version,
+                "environment_version": env_version,
+                "message": (
+                    f"Execution blocked: risk={check.risk_level} requires human approval. "
+                    f"Record one with `ss6 approve --plan {winner.get('id')} "
+                    f"--approved-by <name>` (or pass --approved-by), then re-run execute."
+                ),
+            }
 
     max_attempts = max_repair_attempts or config.MAX_REPAIR_ATTEMPTS
 
@@ -210,13 +255,31 @@ def execute(
     # payload predates the environment contract (spec §19.4).
     env_summary = payload.get("environment") or environment_mod.load_environment().summary()
 
+    # Effective risk + recorded-approval status for the review packet (spec §21).
+    eff_risk, eff_reasons = hitl.effective_risk(impact_d, winner)
+    approval_check = hitl.check_execution_allowed(
+        store_dir, impact=impact_d, chosen_plan=winner,
+        packet_version=packet_version, environment_version=env_version,
+    )
+    approval_summary = {
+        "risk_level": eff_risk,
+        "risk_reasons": eff_reasons,
+        "pre_execution_approval_required": approval_check.required,
+        "pre_execution_approval_recorded": approval_check.approved and approval_check.required,
+        "matched_approval": approval_check.matched,
+        "enforced": bool(require_approval),
+        "final_human_review_required": True,   # always — never auto-merge (§21.1)
+    }
+
     if out_dir is not None:
         write_review_md(exec_result, review, Path(out_dir), checks=test_results,
-                        environment=env_summary)
+                        environment=env_summary, approval=approval_summary)
     return {
         "branch": exec_result.branch,
         "workdir": exec_result.workdir,
         "environment": env_summary,
+        "approval": approval_summary,
+        "risk_level": eff_risk,
         "changed_files": exec_result.changed_files,
         "provider": exec_result.provider,
         "is_live": exec_result.is_live,
@@ -263,12 +326,47 @@ def needs_clarification(requirement: str) -> list[str]:
     return questions
 
 
+def approve(
+    plans: PlansLike,
+    plan_id: Optional[str] = None,
+    approved_by: str = "unknown",
+    out_dir: Optional[Path] = None,
+    notes: str = "",
+) -> dict:
+    """Record an explicit human plan approval (spec §21.2) into ``out/approvals.json``.
+
+    The approval is bound to the current packet version, environment version, chosen
+    plan, and effective risk, so a materially changed packet (new version) or a plan
+    that escalates risk will not be authorized by this record."""
+    from agent_pipeline import hitl
+
+    payload = _coerce_payload(plans)
+    plan_list = payload["plans"]
+    winner_id = plan_id or payload.get("debate", {}).get("winner_id") \
+        or result_to_dict(EvaluatorAgent().evaluate(plan_list))["winner_id"]
+    winner = next(p for p in plan_list if p.get("id") == winner_id)
+    risk, _ = hitl.effective_risk(payload.get("impact") or {}, winner)
+    store_dir = Path(out_dir) if out_dir is not None else config.PROJECT_ROOT / "out"
+    approval = hitl.HumanApproval(
+        stage="plan", decision="approved", approved_by=approved_by,
+        packet_version=(payload.get("problem_packet") or {}).get("version", 1),
+        plan_id=winner_id,
+        environment_version=(payload.get("environment") or {}).get("environment_version", 0),
+        risk_level=risk, notes=notes,
+    )
+    path = hitl.record_approval(store_dir, approval)
+    return {"recorded": True, "path": str(path), "plan_id": winner_id,
+            "risk_level": risk, "approved_by": approved_by}
+
+
 def run(
     requirement: RequirementLike,
     out_dir: Optional[Path] = None,
     run_tests: bool = False,
     max_repair_attempts: Optional[int] = None,
     allow_clarify: bool = False,
+    require_approval: bool = False,
+    approved_by: Optional[str] = None,
 ) -> dict:
     """Convenience: the entire loop (plan -> execute) for one requirement or packet.
 
@@ -276,6 +374,10 @@ def run(
     runs the vagueness heuristic; for a ProblemPacket it uses the packet's own readiness
     and blocking open questions. Either way it returns ``{"needs_clarification": [...]}``
     instead of guessing (roadmap M7 / spec §8). A per-phase timing ``trace`` is included.
+
+    ``require_approval``/``approved_by`` are forwarded to ``execute`` for the risk-based
+    HITL gate (spec §21). If execution is blocked pending approval, the review slot holds
+    the block reason instead of a change.
     """
     import time
 
@@ -294,7 +396,9 @@ def run(
     t0 = time.time()
     payload = plan(requirement, out_dir=out)
     t1 = time.time()
-    review = execute(payload, out_dir=out, run_tests=run_tests, max_repair_attempts=max_repair_attempts)
+    review = execute(payload, out_dir=out, run_tests=run_tests,
+                     max_repair_attempts=max_repair_attempts,
+                     require_approval=require_approval, approved_by=approved_by)
     t2 = time.time()
     trace = {
         "plan_seconds": round(t1 - t0, 3),

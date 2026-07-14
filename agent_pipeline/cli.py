@@ -78,8 +78,26 @@ def _cmd_debate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_approve(args: argparse.Namespace) -> int:
+    res = api.approve(args.plans, plan_id=args.plan, approved_by=args.approved_by,
+                      out_dir=args.out, notes=args.notes or "")
+    print(f"Recorded approval: plan {res['plan_id']} (risk={res['risk_level']}) "
+          f"by {res['approved_by']} → {res['path']}")
+    return 0
+
+
 def _cmd_execute(args: argparse.Namespace) -> int:
-    review = api.execute(args.plans, out_dir=args.out, run_tests=args.run_tests)
+    review = api.execute(args.plans, out_dir=args.out, run_tests=args.run_tests,
+                         require_approval=True, approved_by=args.approved_by)
+    if review.get("approval_blocked"):
+        print(f"⛔ Blocked (risk={review['risk_level']}) — human approval required before execution.")
+        for r in review.get("risk_reasons", []):
+            print(f"   • {r}")
+        print(f"   Approve with: ss6 approve --plans {args.plans} --plan {review['winner_id']} "
+              f"--approved-by <name>   (or add --approved-by <name> here)")
+        return 3
+    print(f"Risk       : {review.get('risk_level')} "
+          f"(approval {'recorded' if review['approval']['pre_execution_approval_recorded'] else 'not required'})")
     print(f"Branch     : {review['branch']}")
     print(f"Changed    : {', '.join(review['changed_files']) or '—'}")
     print(f"Compliance : {'PASS' if review['compliance_passed'] else 'FAIL'}")
@@ -95,12 +113,23 @@ def _cmd_execute(args: argparse.Namespace) -> int:
 
 def _cmd_run(args: argparse.Namespace) -> int:
     req = _resolve_requirement_arg(args)
-    result = api.run(req, out_dir=args.out, run_tests=args.run_tests)
+    result = api.run(req, out_dir=args.out, run_tests=args.run_tests,
+                     require_approval=True, approved_by=args.approved_by)
     if result.get("needs_clarification"):
         print("Need clarification before planning:")
         for q in result["needs_clarification"]:
             print(f"   ❓ {q}")
         return 2
+    review = result["review"]
+    if review.get("approval_blocked"):
+        print(f"⛔ Plan written to {args.out}/, but execution is blocked "
+              f"(risk={review['risk_level']}) — human approval required.")
+        for r in review.get("risk_reasons", []):
+            print(f"   • {r}")
+        print(f"   Review {args.out}/PLANS.md + IMPACT.md, then: ss6 approve --plans "
+              f"{args.out}/plans.json --plan {review['winner_id']} --approved-by <name>")
+        print(f"   …or re-run with --approved-by <name> to approve inline.")
+        return 3
     d = result["plan"]["debate"]
     r = result["review"]
     print(f"Winner     : Plan {d['winner_id']} ({d['winner_focus']})")
@@ -158,13 +187,23 @@ def build_parser() -> argparse.ArgumentParser:
     pe.add_argument("--plans", type=Path, default=config.PROJECT_ROOT / "out" / "plans.json")
     pe.add_argument("--out", type=Path, default=config.PROJECT_ROOT / "out")
     pe.add_argument("--run-tests", action="store_true", help="also run the repo's real tsc + jest in the isolated copy")
+    pe.add_argument("--approved-by", help="record an explicit human approval and proceed (spec §21)")
     pe.set_defaults(func=_cmd_execute)
+
+    pa = sub.add_parser("approve", help="record an explicit human plan approval (spec §21)")
+    pa.add_argument("--plans", type=Path, default=config.PROJECT_ROOT / "out" / "plans.json")
+    pa.add_argument("--plan", help="plan id to approve (defaults to the debate winner)")
+    pa.add_argument("--approved-by", required=True, help="name of the approving software engineer")
+    pa.add_argument("--out", type=Path, default=config.PROJECT_ROOT / "out")
+    pa.add_argument("--notes", help="optional approval notes")
+    pa.set_defaults(func=_cmd_approve)
 
     pn = sub.add_parser("run", help="whole loop: plan -> execute")
     pn.add_argument("requirement", nargs="?", help="raw requirement (or use --intake)")
     pn.add_argument("--intake", type=Path, help="path to a structured intake .json or .md")
     pn.add_argument("--out", type=Path, default=config.PROJECT_ROOT / "out")
     pn.add_argument("--run-tests", action="store_true", help="also run the repo's real tsc + jest in the isolated copy")
+    pn.add_argument("--approved-by", help="record an explicit human approval and proceed past the risk gate (spec §21)")
     pn.set_defaults(func=_cmd_run)
 
     pv = sub.add_parser("eval", help="run an eval harness")
