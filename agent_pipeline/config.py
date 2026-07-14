@@ -12,6 +12,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TARGET_REPO_DIR = PROJECT_ROOT / "target_repo"
 CONTEXT_FILE = PROJECT_ROOT / "context.md"
+# Operational system map + integration contract (descriptive; how the system IS).
+# context.md stays the normative source of truth (how it MUST be). See environment.md.
+ENVIRONMENT_FILE = Path(os.getenv("SS6_ENVIRONMENT_FILE", str(PROJECT_ROOT / "environment.md")))
 # Persistent vector store. Defaults to <project>/.chroma; override with SS6_CHROMA_DIR
 # (useful on read-only/mounted filesystems where the project dir isn't writable).
 CHROMA_DIR = Path(os.getenv("SS6_CHROMA_DIR", str(PROJECT_ROOT / ".chroma")))

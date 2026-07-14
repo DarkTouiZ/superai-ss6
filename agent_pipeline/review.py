@@ -186,7 +186,8 @@ def evidence_from_files(files: List[dict]) -> dict:
     }
 
 
-def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=None) -> Path:
+def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=None,
+                    environment: dict | None = None) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     md_path = out_dir / "REVIEW.md"
     checks = checks or []
@@ -222,6 +223,21 @@ def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=Non
         f"- Files changed: {', '.join(exec_result.changed_files) or '—'}",
         "",
     ]
+    if environment is not None:
+        fresh = "STALE ⚠️" if environment.get("stale") else "fresh"
+        lines += [
+            "## Environment contract (environment.md)",
+            "",
+            f"- System: `{environment.get('system', 'unknown')}` · "
+            f"version {environment.get('environment_version', '?')} · "
+            f"verified by `{environment.get('verified_by', 'unknown')}` · **{fresh}**",
+            f"- Verified at source commit: `{environment.get('last_verified_source_commit') or 'unknown'}`",
+        ]
+        for w in (environment.get("warnings") or [])[:6]:
+            lines.append(f"  - ⚠️ {w}")
+        if not environment.get("present", True):
+            lines.append("  - ⚠️ environment.md absent — operational facts are unverified")
+        lines.append("")
     attempt_log = getattr(exec_result, "attempt_log", []) or []
     if len(attempt_log) > 1 or any(not a.get("passed") for a in attempt_log):
         lines += ["## Repair loop (roadmap M2)", ""]

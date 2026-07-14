@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from agent_pipeline import config, normalize
+from agent_pipeline import environment as environment_mod
 from agent_pipeline.rag.retriever import Retriever
 from agent_pipeline.agents.design import DesignAgent, write_design_md
 from agent_pipeline.agents.architect import ArchitectAgent, write_outputs
@@ -53,6 +54,10 @@ def plan(requirement: str, out_dir: Optional[Path] = None) -> dict:
     design.artifacts = normalize.normalize_design(design.artifacts)
     debate = EvaluatorAgent().evaluate(plan_set.plans)
 
+    # Load the operational environment contract and record its version/freshness so the
+    # plan is auditable against the map it was grounded in (spec §19.4).
+    env = environment_mod.load_environment()
+
     payload = {
         "requirement": plan_set.requirement,
         "provider": plan_set.provider,
@@ -61,15 +66,17 @@ def plan(requirement: str, out_dir: Optional[Path] = None) -> dict:
         "plans": plan_set.plans,
         "design": design.artifacts,
         "debate": result_to_dict(debate),
+        "environment": env.summary(),
     }
     if out_dir is not None:
         out_dir = Path(out_dir)
         write_design_md(design, out_dir)
         json_path, _ = write_outputs(plan_set, out_dir, design=design.artifacts)
         write_debate_md(debate, out_dir)
-        # fold the debate result into plans.json on disk
+        # fold the debate result + environment record into plans.json on disk
         data = json.loads(json_path.read_text(encoding="utf-8"))
         data["debate"] = payload["debate"]
+        data["environment"] = payload["environment"]
         json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return payload
 
@@ -152,11 +159,17 @@ def execute(
     evidence["winner_focus"] = winner_focus
     evidence["winner_validated"] = winner_validated
 
+    # Environment freshness travels with the plan; fall back to a fresh load if this
+    # payload predates the environment contract (spec §19.4).
+    env_summary = payload.get("environment") or environment_mod.load_environment().summary()
+
     if out_dir is not None:
-        write_review_md(exec_result, review, Path(out_dir), checks=test_results)
+        write_review_md(exec_result, review, Path(out_dir), checks=test_results,
+                        environment=env_summary)
     return {
         "branch": exec_result.branch,
         "workdir": exec_result.workdir,
+        "environment": env_summary,
         "changed_files": exec_result.changed_files,
         "provider": exec_result.provider,
         "is_live": exec_result.is_live,
