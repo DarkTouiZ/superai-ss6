@@ -118,7 +118,18 @@ tested commit on branch `ss6/spec-upgrade` (branched from `main`).
   `requirement_text(packet)` (criteria, constraints, non-goals) from Phase 3.
 - **Verify:** full suite **93 → 102**; raw-string path unaffected (`evaluation` is null).
 
+### Phase 6 — evidence-complete REVIEW.md (spec §23) — commit `<pending>`
+- `review._evidence_sections` renders the §23 evidence from the plan/execute context:
+  feature & intent (packet id/version + user goal), selected plan + rollback + user/system
+  fit, an acceptance-criteria **checklist with per-criterion evidence**, security/schema/
+  public-contract impact, grounding citations (path:line), assumptions/open questions, and
+  the context.md rules in force. Added a `gate_passed` clarifier ("technical gate passed —
+  NOT that a human approved the merge or the user accepted") and the four explicit human
+  decisions (APPROVE / REQUEST FIX / RE-PLAN / REJECT, §21.3). `api.execute` threads the
+  evidence bundle into `write_review_md`.
+- **Verify:** full suite (pending run); REVIEW.md inspected end-to-end — all §23 sections
+  present with the criteria checklist populated.
+
 ### Next up
-- Phase 6 (evidence-complete REVIEW.md: acceptance-criteria checklist w/ evidence, changed
-  files+diff, approval, checks status, repair history), Phase 7 (honest benchmark +
-  docs/version/LICENSE/LangGraph/clarification alignment). Then the spec §25 DoD review.
+- Phase 7 (honest benchmark + docs/version/LICENSE/LangGraph/clarification alignment, spec
+  §22.5–22.6). Then the spec §25 definition-of-done review across all phases.

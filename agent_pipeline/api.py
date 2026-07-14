@@ -281,9 +281,20 @@ def execute(
         "final_human_review_required": True,   # always — never auto-merge (§21.1)
     }
 
+    # Evidence bundle for an evidence-complete REVIEW.md (spec §23).
+    review_context = {
+        "problem_packet": payload.get("problem_packet"),
+        "winner": winner,                       # enriched: acceptance coverage, rollback, fit
+        "impact": impact_d,
+        "grounding": payload.get("grounding"),
+        "assumptions": payload.get("assumptions"),
+        "open_questions": payload.get("open_questions"),
+    }
+
     if out_dir is not None:
         write_review_md(exec_result, review, Path(out_dir), checks=test_results,
-                        environment=env_summary, approval=approval_summary)
+                        environment=env_summary, approval=approval_summary,
+                        context=review_context)
     return {
         "branch": exec_result.branch,
         "workdir": exec_result.workdir,

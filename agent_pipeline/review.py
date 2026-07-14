@@ -186,8 +186,96 @@ def evidence_from_files(files: List[dict]) -> dict:
     }
 
 
+def _evidence_sections(context: dict) -> List[str]:
+    """Render the spec §23 evidence blocks from the plan/execute context: feature intent,
+    selected plan, acceptance-criteria checklist, impact, grounding, assumptions, and the
+    context.md rules in force."""
+    lines: List[str] = []
+    packet = context.get("problem_packet") or {}
+    winner = context.get("winner") or {}
+    impact = context.get("impact") or {}
+    grounding = context.get("grounding") or []
+
+    if packet:
+        lines += [
+            "## Feature & intent (ProblemPacket)",
+            "",
+            f"- Title: **{packet.get('feature_title', '—')}** · packet v{packet.get('version', 1)}",
+            f"- User goal / pain: {packet.get('user_goal_or_pain', '—')}",
+            f"- Desired outcome: {packet.get('desired_outcome', '—')}",
+            "",
+        ]
+
+    if winner:
+        lines += [
+            "## Selected plan",
+            "",
+            f"- Plan **{winner.get('id', '?')}** — {winner.get('title', '')} "
+            f"(focus: {winner.get('priority_focus', '')})",
+            f"- Rollback: {winner.get('rollback_strategy', '—')}",
+        ]
+        fit = winner.get("packet_fit") or {}
+        if fit:
+            lines.append(
+                f"- Fit: user-fit **{'PASS' if fit.get('user_fit_pass') else 'REVIEW'}** "
+                f"(coverage {fit.get('acceptance_coverage')}), system-fit "
+                f"**{'PASS' if fit.get('system_fit_pass') else 'REVIEW'}**"
+                + (f" — {'; '.join(fit.get('system_fit_reasons', []))}" if fit.get('system_fit_reasons') else ""))
+        lines.append("")
+
+    covered = winner.get("acceptance_criteria_covered")
+    criteria = covered if covered else [{"criterion": c, "covered": None, "evidence": []}
+                                        for c in packet.get("acceptance_criteria", [])]
+    if criteria:
+        lines += ["## Acceptance criteria (plan-level coverage — not proof of user acceptance)", ""]
+        for c in criteria:
+            mark = "☑" if c.get("covered") else ("☐" if c.get("covered") is False else "•")
+            ev = f" _(evidence: {', '.join(c.get('evidence', []))})_" if c.get("evidence") else ""
+            lines.append(f"- {mark} {c.get('criterion', '')}{ev}")
+        lines.append("")
+
+    sec = impact.get("security_or_privacy_impact") or []
+    schema = impact.get("data_or_schema_impact") or []
+    contracts = impact.get("public_contracts_at_risk") or []
+    protected = impact.get("protected_areas_touched") or []
+    if any([sec, schema, contracts, protected]):
+        lines += ["## Security / schema / contract impact", ""]
+        for label, items in (("security/privacy", sec), ("data/schema", schema),
+                             ("public contracts", contracts), ("protected areas", protected)):
+            if items:
+                lines.append(f"- **{label}:** {'; '.join(items)}")
+        lines.append("")
+
+    if grounding:
+        lines += ["## Grounding used during planning (retrieval evidence)", ""]
+        for g in grounding[:8]:
+            lines.append(f"- `{g.get('rel_path')}:{g.get('start_line')}-{g.get('end_line')}` "
+                         f"(score {g.get('score')})")
+        lines.append("")
+
+    assumptions = context.get("assumptions") or []
+    open_qs = context.get("open_questions") or []
+    if assumptions or open_qs:
+        lines += ["## Assumptions & open questions", ""]
+        for a in assumptions:
+            lines.append(f"- _assumption:_ {a.get('text', a) if isinstance(a, dict) else a}")
+        for q in open_qs:
+            lines.append(f"- _open:_ {q.get('question', q) if isinstance(q, dict) else q}")
+        lines.append("")
+
+    lines += [
+        "## context.md rules in force (enforced by the compliance gate)",
+        "",
+        "- §3 reuse canonical primitives; §4 ApiService-only / repositories for DB / logic in "
+        "services; §5 tests + integer-satang money; no inline hex, no dynamic eval, no secrets.",
+        "",
+    ]
+    return lines
+
+
 def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=None,
-                    environment: dict | None = None, approval: dict | None = None) -> Path:
+                    environment: dict | None = None, approval: dict | None = None,
+                    context: dict | None = None) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     md_path = out_dir / "REVIEW.md"
     checks = checks or []
@@ -216,6 +304,9 @@ def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=Non
         "# REVIEW.md — Phase 4 (Test & Human-in-the-Loop)",
         "",
         f"**Automated gate: {status}**",
+        "",
+        "_`gate_passed` means the automated technical gate passed — NOT that a human "
+        "approved the merge or that the user accepted the feature (spec §23)._",
         "",
         f"- Branch: `{exec_result.branch}` (in isolated copy: `{exec_result.workdir}`)",
         f"- Generated by: `{exec_result.provider}` "
@@ -256,6 +347,8 @@ def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=Non
             lines.append(f"  - approved by `{m.get('approved_by')}` at {m.get('approved_at')} "
                          f"(plan {m.get('plan_id')}, packet v{m.get('packet_version')})")
         lines.append("")
+    if context:
+        lines += _evidence_sections(context)
     attempt_log = getattr(exec_result, "attempt_log", []) or []
     if len(attempt_log) > 1 or any(not a.get("passed") for a in attempt_log):
         lines += ["## Repair loop (roadmap M2)", ""]
@@ -303,15 +396,18 @@ def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=Non
         exec_result.diff.strip() or "(no diff)",
         "```",
         "",
-        "## Human-in-the-loop — your decision",
+        "## Human-in-the-loop — your decision (spec §21.3)",
         "",
-        "The pipeline has **halted and will not merge.** To act on this change:",
+        "The pipeline has **halted and will not merge.** Choose one:",
         "",
-        f"- **Inspect:** `cd {exec_result.workdir} && git diff main..{exec_result.branch}`",
-        "- **Approve:** merge the branch, or copy the reviewed file(s) into `target_repo/`.",
-        "- **Reject:** delete the isolated copy under `out/exec/` and adjust the plan.",
+        f"- **APPROVE** — accept the diff for your external merge workflow "
+        f"(`cd {exec_result.workdir} && git diff main..{exec_result.branch}`).",
+        "- **REQUEST FIX** — feed structured feedback back into the repair loop.",
+        "- **RE-PLAN** — the requirement/system understanding changed; revise the packet and re-plan.",
+        "- **REJECT** — stop; the isolated copy under `out/exec/` and these artifacts are preserved.",
         "",
-        "_No production system was touched; all work is confined to the isolated copy._",
+        "_No production system was touched; all work is confined to the isolated copy. "
+        "A human — not the agent — owns the merge/deploy decision._",
     ]
     md_path.write_text("\n".join(lines), encoding="utf-8")
     return md_path
