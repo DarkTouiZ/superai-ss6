@@ -102,6 +102,20 @@ EXEC_DIR = Path(os.getenv("SS6_EXEC_DIR", str(PROJECT_ROOT / "out" / "exec")))
 GIT_AUTHOR_NAME = os.getenv("SS6_GIT_NAME", "SS6 Developer Agent")
 GIT_AUTHOR_EMAIL = os.getenv("SS6_GIT_EMAIL", "ss6-agent@local")
 
+# --- Write allowlist (safety, spec §22.1) ------------------------------------
+# The Developer writes only inside the isolated copy AND only under known roots of
+# the eleven-7 repo. Containment (the resolved path stays under the working copy) is
+# the hard guard; this allowlist is a second fence so a generated path can't drop a
+# file at an unexpected repo location. Kept as data so it's easy to review/extend.
+ALLOWED_WRITE_ROOTS = {"backend", "frontend", "infra", "localstack"}
+ALLOWED_WRITE_FILES = {"docker-compose.yml", "README.md", ".gitignore"}
+
+# Real backend/frontend checks reuse a cached node_modules (symlink) with NO network.
+# If the cache is absent we do NOT silently run `npm install` (which would hit the
+# network and contradict the "$0, offline" claim); instead the check is reported
+# UNVERIFIED unless this opt-in is set. (spec §22.4)
+ALLOW_NPM_INSTALL = os.getenv("SS6_ALLOW_NPM_INSTALL", "").lower() in {"1", "true", "yes"}
+
 # --- Repair loop (roadmap M2) ------------------------------------------------
 # When the gate (compliance + optional tsc/jest) fails, the Developer is re-asked
 # with the violations fed back, up to MAX_REPAIR_ATTEMPTS times, before halting.

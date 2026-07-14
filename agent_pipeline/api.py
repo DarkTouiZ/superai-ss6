@@ -116,7 +116,10 @@ def execute(
 
     def gate(files, workdir) -> "GateOutcome":
         review = review_files(files)
-        tests = checks.run_backend_checks(workdir) if run_tests else []
+        # Select checks from the ACTUAL changed paths (spec §22.4): backend change →
+        # backend suite, frontend change → frontend suite.
+        changed = [f["path"] for f in files]
+        tests = checks.run_selected_checks(workdir, changed) if run_tests else []
         tests_ok = checks.checks_passed(tests) if run_tests else True
         passed = review.passed and tests_ok
         return GateOutcome(
@@ -133,6 +136,8 @@ def execute(
     review = exec_result.gate_review or review_files(exec_result.files)
     test_results = exec_result.gate_tests or []
     tests_passed = checks.checks_passed(test_results) if run_tests else True
+    # Honest overall status of the real checks (PASS/FAIL/UNVERIFIED/NOT_REQUIRED).
+    checks_status = checks.gate_status(test_results) if run_tests else "NOT_REQUIRED"
 
     # Roadmap M6: validate the debate winner against POST-EXECUTION evidence, not its
     # self-declared label — a 'reuse' winner is only validated if the code actually
@@ -158,8 +163,9 @@ def execute(
         "compliance_passed": review.passed,
         "violations": [v for f in review.files for v in f.violations],
         "tests_run": bool(run_tests),
-        "tests": [{"name": r.name, "result": r.mark, "detail": r.detail[:400]} for r in test_results],
+        "tests": [{"name": r.name, "result": r.status, "detail": r.detail[:400]} for r in test_results],
         "tests_passed": tests_passed,
+        "checks_status": checks_status,            # honest: PASS/FAIL/UNVERIFIED/NOT_REQUIRED
         "gate_passed": review.passed and tests_passed,
         "attempts": exec_result.attempts,
         "repaired": exec_result.repaired,

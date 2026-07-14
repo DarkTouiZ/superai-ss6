@@ -14,11 +14,76 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
 
 from agent_pipeline import config, vcs
 from agent_pipeline.llm import get_llm
 from agent_pipeline.normalize import canonical_path
+
+
+class PathViolation(ValueError):
+    """A generated path tried to escape the isolated repo or hit a disallowed root."""
+
+
+def _normalize_rel(path: str) -> str:
+    """Strip an optional ``target_repo/`` prefix and normalize to POSIX separators.
+
+    Only the *exact* ``target_repo/`` prefix is stripped — ``target_repo-evil/x`` is
+    left intact so it fails the allowlist rather than being silently accepted.
+    """
+    p = (path or "").strip().replace("\\", "/")
+    if p.startswith("target_repo/"):
+        p = p[len("target_repo/"):]
+    return p
+
+
+def _safe_dest(rel: str, wc_root: Path) -> Path:
+    """Resolve ``rel`` under the working copy and prove it is safe (spec §22.1).
+
+    Rejects absolute paths, ``..`` traversal, anything that escapes the isolated repo,
+    and anything outside the write allowlist. Runs BEFORE any mkdir/read/write/patch.
+    Returns the resolved absolute destination on success; raises ``PathViolation``.
+    """
+    p = _normalize_rel(rel)
+    if not p:
+        raise PathViolation(f"empty path: {rel!r}")
+    if p.startswith("/") or (len(p) > 1 and p[1] == ":"):  # POSIX abs / Windows drive
+        raise PathViolation(f"absolute path rejected: {rel!r}")
+    if ".." in Path(p).parts:
+        raise PathViolation(f"parent traversal ('..') rejected: {rel!r}")
+    root = wc_root.resolve()
+    dest = (root / p).resolve()
+    try:
+        contained = dest.relative_to(root)
+    except ValueError:
+        raise PathViolation(f"path escapes the isolated repo: {rel!r}")
+    parts = contained.parts
+    if str(contained) in config.ALLOWED_WRITE_FILES:
+        return dest
+    if parts and parts[0] in config.ALLOWED_WRITE_ROOTS:
+        return dest
+    raise PathViolation(
+        f"path outside allowed roots {sorted(config.ALLOWED_WRITE_ROOTS)}: {rel!r}"
+    )
+
+
+# ``+++ b/path`` / ``--- a/path`` and ``diff --git a/path b/path`` headers.
+_DIFF_AB = re.compile(r"^(?:\+\+\+|---)\s+(?:[ab]/)?(.+?)\s*$", re.MULTILINE)
+_DIFF_GIT = re.compile(r"^diff --git a/(.+?) b/(.+?)\s*$", re.MULTILINE)
+
+
+def _diff_target_paths(diff_text: str) -> List[str]:
+    """Every file path a unified diff would touch, so each can be containment-checked
+    (spec §22.1: validate every file a diff references, not just the wrapper path)."""
+    paths: set[str] = set()
+    for m in _DIFF_GIT.finditer(diff_text):
+        paths.update(m.groups())
+    for m in _DIFF_AB.finditer(diff_text):
+        t = m.group(1).strip()
+        if t and t != "/dev/null":
+            paths.add(t)
+    return sorted(paths)
 
 SYSTEM_PROMPT = (
     "You are the Developer agent in an autonomous software-engineering pipeline for "
@@ -159,20 +224,34 @@ class DeveloperAgent:
         effective: List[dict] = []
         conflicts: List[str] = []
         for f in files:
-            rel = f["path"]
-            # write under the repo's src/ tree; normalize to a clean repo-relative path
-            rel = rel[len("target_repo/"):] if rel.startswith("target_repo/") else rel
-            dest = wc.path / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
+            raw = f["path"]
+            # SAFETY (spec §22.1): validate containment + allowlist BEFORE any fs touch.
+            try:
+                dest = _safe_dest(raw, wc.path)
+            except PathViolation as exc:
+                conflicts.append(f"{raw}: unsafe path rejected — {exc}")
+                continue
+            rel = _normalize_rel(raw)
             edits = f.get("edits") or ([f["edit"]] if "edit" in f else None)
             if "diff" in f:
                 # roadmap M3 (full): apply a real unified diff via git apply --3way.
+                # First validate EVERY path the diff references, not just the wrapper.
+                bad = []
+                for tp in _diff_target_paths(f["diff"]):
+                    try:
+                        _safe_dest(tp, wc.path)
+                    except PathViolation as exc:
+                        bad.append(f"{tp} ({exc})")
+                if bad:
+                    conflicts.append(f"{raw}: diff targets rejected — {'; '.join(bad)}")
+                    continue
                 ok, msg = vcs.apply_patch(wc, f["diff"])
                 if not ok:
                     conflicts.append(f"{rel}: patch did not apply ({msg})")
                 final = dest.read_text(encoding="utf-8") if dest.exists() else ""
                 effective.append({"path": f["path"], "content": final, "patched": True})
             elif edits is not None:
+                dest.parent.mkdir(parents=True, exist_ok=True)
                 existing = dest.read_text(encoding="utf-8") if dest.exists() else ""
                 if not existing:
                     conflicts.append(f"{rel}: target file to edit does not exist")
@@ -181,6 +260,7 @@ class DeveloperAgent:
                 dest.write_text(new_text, encoding="utf-8")
                 effective.append({"path": f["path"], "content": new_text, "edited": True})
             else:
+                dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(f["content"], encoding="utf-8")
                 effective.append({"path": f["path"], "content": f["content"]})
         return effective, conflicts
@@ -213,6 +293,11 @@ class DeveloperAgent:
         final_outcome = None
 
         for attempt in range(1, max_attempts + 1):
+            # SAFETY (spec §22.2): every regenerated attempt starts from a clean
+            # baseline, so a file written by an earlier attempt can never survive
+            # into the diff we gate and commit.
+            if attempt > 1:
+                vcs.reset_to_base(wc)
             files = self.generate_files(
                 requirement, winner, design, feedback=feedback, repair_round=attempt - 1
             )
@@ -223,7 +308,9 @@ class DeveloperAgent:
                     break
                 feedback = [f"edit conflict — {c}" for c in conflicts]
                 continue
-            outcome = gate(effective, str(wc.path))
+            # Gate the ACTUAL change set enumerated from git, not the LLM's manifest.
+            diff_files = vcs.working_tree_files(wc)
+            outcome = gate(diff_files, str(wc.path))
             if conflicts:  # an anchored edit that didn't apply is a hard failure
                 outcome.passed = False
                 outcome.feedback = list(outcome.feedback) + [f"edit conflict — {c}" for c in conflicts]

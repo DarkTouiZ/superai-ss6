@@ -92,12 +92,18 @@ class GateOutcome:
 
 def gate_feedback(review: "ReviewResult", tests: list | None = None) -> List[str]:
     """Flatten a review (+ optional real-check results) into actionable feedback
-    lines for the Developer's next repair attempt."""
+    lines for the Developer's next repair attempt. A required check that could not
+    run (UNVERIFIED, spec §22.3) is surfaced too — it blocks the gate, so the
+    reviewer must see it rather than have it vanish as a silent skip."""
     lines = [f"{fr.path}: {v}" for fr in review.files for v in fr.violations]
     for r in tests or []:
-        if not getattr(r, "skipped", False) and not getattr(r, "passed", True):
-            first = (r.detail.splitlines()[-1][:160] if getattr(r, "detail", "") else "")
+        status = getattr(r, "status", "")
+        detail = getattr(r, "detail", "")
+        first = detail.splitlines()[-1][:160] if detail else ""
+        if status == "FAIL":
             lines.append(f"{r.name} failed: {first}")
+        elif status == "UNVERIFIED":
+            lines.append(f"{r.name} UNVERIFIED (required check could not run): {first}")
     return lines
 
 
@@ -184,10 +190,27 @@ def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=Non
     out_dir.mkdir(parents=True, exist_ok=True)
     md_path = out_dir / "REVIEW.md"
     checks = checks or []
-    ran = [c for c in checks if not c.skipped]
-    tests_ok = all(c.passed for c in ran)
+    # Honest reduction of the real checks (mirrors checks.gate_status without the
+    # import): an UNVERIFIED required check is NOT a pass (spec §22.3).
+    statuses = {getattr(c, "status", "") for c in checks}
+    if "FAIL" in statuses:
+        checks_status = "FAIL"
+    elif "UNVERIFIED" in statuses:
+        checks_status = "UNVERIFIED"
+    elif "PASS" in statuses:
+        checks_status = "PASS"
+    else:
+        checks_status = "NOT_REQUIRED"
+    tests_ok = checks_status not in ("FAIL", "UNVERIFIED")
     gate_ok = review.passed and tests_ok
-    status = "PASS ✅ — ready for human review" if gate_ok else "FAIL ❌ — fix before review"
+    if not review.passed:
+        status = "FAIL ❌ — compliance violations; fix before review"
+    elif checks_status == "UNVERIFIED":
+        status = "UNVERIFIED ⚠️ — required checks could not run; not ready to merge"
+    elif checks_status == "FAIL":
+        status = "FAIL ❌ — real checks failed; fix before review"
+    else:
+        status = "PASS ✅ — ready for human review"
     lines = [
         "# REVIEW.md — Phase 4 (Test & Human-in-the-Loop)",
         "",
@@ -216,10 +239,12 @@ def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=Non
                 lines.append(f"    - {v}")
         lines.append("")
     if checks:
-        lines += ["## Real checks (tsc + jest, run in the isolated copy)", ""]
+        lines += [f"## Real checks (selected by changed area) — status: {checks_status}", ""]
+        _icon = {"PASS": "✅", "FAIL": "❌", "UNVERIFIED": "⚠️", "NOT_REQUIRED": "⏭️"}
         for c in checks:
-            icon = "⏭️" if c.skipped else ("✅" if c.passed else "❌")
-            lines.append(f"- {icon} **{c.name}** — {c.mark}" + (f": {c.detail.splitlines()[0]}" if c.detail and not c.passed else ""))
+            icon = _icon.get(getattr(c, "status", ""), "•")
+            detail = f": {c.detail.splitlines()[0]}" if c.detail and not c.passed else ""
+            lines.append(f"- {icon} **{c.name}** — {c.mark}{detail}")
         lines.append("")
     lines += [
         "## Compliance results",

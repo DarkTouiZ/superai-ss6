@@ -134,3 +134,43 @@ def apply_patch(wc: WorkingCopy, diff_text: str, three_way: bool = True) -> Tupl
 def changed_files(wc: WorkingCopy) -> List[str]:
     out = _git(["diff", "--name-only", f"{wc.base_branch}..{wc.feature_branch or 'HEAD'}"], wc.path)
     return [line for line in out.splitlines() if line.strip() and "node_modules" not in line]
+
+
+def reset_to_base(wc: WorkingCopy) -> None:
+    """Discard the working tree back to the baseline snapshot (spec §22.2).
+
+    Every regenerated repair attempt starts from a clean baseline so a file written by
+    an earlier attempt can never survive into the diff we gate and commit. ``git clean``
+    respects ``.git/info/exclude`` (node_modules), so the symlinked deps cache is kept.
+    """
+    _git(["reset", "-q", "--hard", wc.base_branch], wc.path)
+    _git(["clean", "-fdq"], wc.path)
+
+
+def working_tree_files(wc: WorkingCopy) -> List[dict]:
+    """The ACTUAL change set vs baseline, read from disk (spec §22.2).
+
+    Returns ``[{path, content}]`` for every added/modified file (deletions and
+    node_modules excluded), enumerated from git rather than trusting the LLM's
+    self-reported file manifest — so the gate reviews what is really on disk.
+    """
+    _git(["add", "-A"], wc.path)
+    out = _git(["diff", "--cached", "--name-status", wc.base_branch], wc.path)
+    files: List[dict] = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        status, path = parts[0], parts[-1]
+        if "node_modules" in path or status.startswith("D"):
+            continue
+        fp = wc.path / path
+        if fp.exists():
+            files.append({"path": path, "content": fp.read_text(encoding="utf-8", errors="replace")})
+    return files
+
+
+def working_diff(wc: WorkingCopy) -> str:
+    """Unified diff of the current working tree (staged) against baseline."""
+    _git(["add", "-A"], wc.path)
+    return _git(["diff", "--cached", wc.base_branch], wc.path)
