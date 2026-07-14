@@ -88,7 +88,7 @@ def plan(requirement: RequirementLike, out_dir: Optional[Path] = None) -> dict:
     # Load the operational environment contract (spec §19.4) and produce the pre-planning
     # change-impact analysis (spec §20.3) the Architect must respond to.
     env = environment_mod.load_environment()
-    impact = impact_mod.analyze_impact(requirement, chunks, environment=env)
+    impact = impact_mod.analyze_impact(requirement, chunks, environment=env, packet=packet)
     impact_block = impact_mod.impact_prompt_block(impact)
 
     design = DesignAgent(retriever=retriever).generate(requirement, grounding=chunks)

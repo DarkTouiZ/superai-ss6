@@ -71,16 +71,25 @@ class EnvironmentContract:
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
     """Split ``--- ... ---`` YAML-ish frontmatter (simple ``key: value`` lines, no PyYAML
-    dependency) from the Markdown body. Returns (frontmatter_dict, body)."""
-    if not text.startswith("---"):
+    dependency) from the Markdown body. Returns (frontmatter_dict, body).
+
+    The closing fence must be a line that is exactly ``---`` so a ``---`` horizontal rule
+    later in the body cannot truncate parsing (D3)."""
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
         return {}, text
-    end = text.find("\n---", 3)
-    if end == -1:
+    fm_lines: list[str] = []
+    body_start = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            body_start = i + 1
+            break
+        fm_lines.append(lines[i])
+    if body_start is None:
         return {}, text
-    block = text[3:end].strip()
-    body = text[end + 4:].lstrip("\n")
+    body = "".join(lines[body_start:]).lstrip("\n")
     fm: dict = {}
-    for line in block.splitlines():
+    for line in fm_lines:
         line = line.strip()
         if not line or line.startswith("#") or ":" not in line:
             continue

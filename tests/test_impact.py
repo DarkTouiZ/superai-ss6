@@ -65,6 +65,31 @@ def test_public_contract_flag_from_routes_area():
     assert ia.public_contracts_at_risk
 
 
+def test_packet_constraint_labels_do_not_spuriously_flag_security():
+    """D1 regression: requirement_text() always renders 'security:'/'privacy:' labels;
+    a benign packet must NOT be classified as security-sensitive because of them."""
+    from agent_pipeline import intake
+    benign = intake.ProblemPacket("Rename label", "change dashboard title",
+                                  "cosmetic", "nicer title", ["title shows new text"])
+    ia = impact_mod.analyze_impact(
+        intake.requirement_text(benign),
+        [_chunk("frontend/src/app/features/x.ts")], packet=benign)
+    assert not ia.security_or_privacy_impact
+    assert ia.proposed_risk_level in ("low", "medium")
+
+
+def test_packet_real_security_constraint_is_still_flagged():
+    """The fix must not silence genuine security content in a packet's constraints."""
+    from agent_pipeline import intake
+    p = intake.ProblemPacket("Refunds", "allow refunds", "x", "y", ["refund works"])
+    p.constraints.security = "must check user authorization before issuing a refund"
+    ia = impact_mod.analyze_impact(
+        intake.requirement_text(p),
+        [_chunk("backend/src/services/orders.ts")], packet=p)
+    assert ia.security_or_privacy_impact
+    assert ia.proposed_risk_level == "high"
+
+
 def test_impact_md_and_dict_round_trip(tmp_path):
     ia = impact_mod.analyze_impact("Add analytics endpoint",
                                    [_chunk("backend/src/services/analytics.ts")])

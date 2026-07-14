@@ -231,6 +231,9 @@ class DeveloperAgent:
             except PathViolation as exc:
                 conflicts.append(f"{raw}: unsafe path rejected — {exc}")
                 continue
+            if dest.exists() and dest.is_dir():  # a path naming an existing dir can't be a file
+                conflicts.append(f"{raw}: path is an existing directory, not a file")
+                continue
             rel = _normalize_rel(raw)
             edits = f.get("edits") or ([f["edit"]] if "edit" in f else None)
             if "diff" in f:

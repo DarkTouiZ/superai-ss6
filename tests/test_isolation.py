@@ -77,6 +77,15 @@ def test_valid_backend_path_writes():
     assert (wc.path / "backend/src/ss6_probe.ts").exists()
 
 
+def test_path_naming_existing_directory_is_rejected():
+    """D4 regression: a generated path that resolves to an existing directory must be a
+    clean conflict, not an uncaught IsADirectoryError."""
+    wc = _fresh("iso-dir")
+    effective, conflicts = DeveloperAgent._write_files(wc, [{"path": "backend/src", "content": "x"}])
+    assert any("existing directory" in c for c in conflicts), conflicts
+    assert not effective
+
+
 def test_diff_touching_outside_repo_is_rejected():
     """A diff whose wrapper path is safe but whose body targets an outside file must
     be rejected — every path a diff references is validated (spec §22.1)."""

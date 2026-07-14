@@ -82,9 +82,35 @@ def _words(text: str) -> set:
     return {w.strip(".,:;!?()[]'\"").lower() for w in (text or "").split()}
 
 
-def analyze_impact(requirement: str, grounding, environment=None) -> ImpactAnalysis:
+_UNKNOWN_VALUES = {"unknown", "not_provided", ""}
+
+
+def _keyword_text(requirement: str, packet) -> str:
+    """Text used for keyword risk-matching.
+
+    For a ProblemPacket we must use its *semantic content* (user intent, criteria, and
+    the actual filled-in constraint values), NOT ``requirement_text()`` — that rendered
+    form always prints the literal labels 'security:'/'privacy:' for every packet, which
+    would spuriously flag every feature as security-sensitive (defect D1). Unknown
+    constraint values are excluded so a blank constraint is not read as content.
+    """
+    if packet is None:
+        return requirement or ""
+    parts = [
+        packet.user_requirement, packet.user_goal_or_pain, packet.desired_outcome,
+        " ".join(packet.acceptance_criteria), " ".join(packet.non_goals),
+        " ".join(packet.software_engineer_requirements),
+    ]
+    for cval in vars(packet.constraints).values():
+        if str(cval).strip().lower() not in _UNKNOWN_VALUES:
+            parts.append(str(cval))
+    return " ".join(p for p in parts if p)
+
+
+def analyze_impact(requirement: str, grounding, environment=None, packet=None) -> ImpactAnalysis:
     """Build an ImpactAnalysis from the requirement + grounding chunks (path/line
-    evidence). ``environment`` (optional) contributes freshness unknowns.
+    evidence). ``environment`` (optional) contributes freshness unknowns; ``packet``
+    (optional ProblemPacket) supplies clean keyword content (see ``_keyword_text``).
     ``grounding`` is a list of GroundingChunk (or objects exposing ``rel_path``/``cite``)."""
     paths = []
     evidence = []
@@ -98,7 +124,7 @@ def analyze_impact(requirement: str, grounding, environment=None) -> ImpactAnaly
         evidence.append(cite() if callable(cite) else rel)
 
     ia = ImpactAnalysis(evidence=sorted(set(e for e in evidence if e)))
-    words = _words(requirement)
+    words = _words(_keyword_text(requirement, packet))
 
     # 1) affected areas from grounded paths
     areas: List[str] = []
