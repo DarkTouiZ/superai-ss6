@@ -20,10 +20,14 @@ import json
 from pathlib import Path
 from typing import Optional, Union
 
+from dataclasses import asdict
+
 from agent_pipeline import config, normalize
 from agent_pipeline import environment as environment_mod
 from agent_pipeline import grounding as grounding_mod
 from agent_pipeline import impact as impact_mod
+from agent_pipeline import intake as intake_mod
+from agent_pipeline.intake import ProblemPacket
 from agent_pipeline.rag.retriever import Retriever
 from agent_pipeline.agents.design import DesignAgent, write_design_md
 from agent_pipeline.agents.architect import ArchitectAgent, write_outputs
@@ -36,6 +40,29 @@ from agent_pipeline.agents.developer import DeveloperAgent
 from agent_pipeline.review import review_files, write_review_md, evidence_from_files
 
 PlansLike = Union[dict, str, Path]
+RequirementLike = Union[str, ProblemPacket]
+
+
+def _resolve_requirement(requirement: RequirementLike):
+    """Accept a raw requirement string or a ProblemPacket. Returns
+    ``(requirement_text, packet_or_None)``; for a packet the requirement text is the
+    rich prompt-compatible form so existing agents run unchanged (spec §7, §13)."""
+    if isinstance(requirement, ProblemPacket):
+        packet = intake_mod.finalize(requirement)
+        return intake_mod.requirement_text(packet), packet
+    return requirement, None
+
+
+def _packet_payload(packet: Optional[ProblemPacket]) -> dict:
+    """The packet-derived slice of plans.json (empty-ish when no packet was used)."""
+    if packet is None:
+        return {"problem_packet": None, "assumptions": [], "open_questions": [], "readiness": None}
+    return {
+        "problem_packet": packet.to_dict(),
+        "assumptions": [asdict(a) for a in packet.assumptions],
+        "open_questions": [asdict(q) for q in packet.open_questions],
+        "readiness": asdict(packet.readiness) if packet.readiness else None,
+    }
 
 
 def retrieve(requirement: str, top_k: int = config.DEFAULT_TOP_K) -> list[str]:
@@ -43,11 +70,16 @@ def retrieve(requirement: str, top_k: int = config.DEFAULT_TOP_K) -> list[str]:
     return Retriever(rebuild=True).retrieve_paths(requirement, top_k=top_k)
 
 
-def plan(requirement: str, out_dir: Optional[Path] = None) -> dict:
+def plan(requirement: RequirementLike, out_dir: Optional[Path] = None) -> dict:
     """Phases 1-3 — design the requirement, produce three grounded plans, and run
     the deterministic debate. Returns the full ``plans.json`` payload (incl. the
     winner). If ``out_dir`` is given, also writes DESIGN.md / PLANS.md / DEBATE.md.
+
+    ``requirement`` may be a raw string (unchanged behavior) or a structured
+    ``ProblemPacket``; when a packet is given, its packet-derived requirement text
+    grounds the agents and the packet + readiness are recorded in plans.json (spec §13).
     """
+    requirement, packet = _resolve_requirement(requirement)
     retriever = Retriever(rebuild=True)
     # One grounding snapshot per run, shared by Design and Architect so their view of
     # the repository is identical, and carrying the actual retrieved code (spec §20.2).
@@ -79,6 +111,7 @@ def plan(requirement: str, out_dir: Optional[Path] = None) -> dict:
         "environment": env.summary(),
         "grounding": grounding_mod.snapshot(chunks),
         "impact": impact.to_dict(),
+        **_packet_payload(packet),
     }
     if out_dir is not None:
         out_dir = Path(out_dir)
@@ -86,12 +119,11 @@ def plan(requirement: str, out_dir: Optional[Path] = None) -> dict:
         json_path, _ = write_outputs(plan_set, out_dir, design=design.artifacts)
         write_debate_md(debate, out_dir)
         impact_mod.write_impact_md(impact, out_dir, requirement=requirement)
-        # fold the debate result + environment + grounding + impact into plans.json
+        # fold the debate result + environment + grounding + impact + packet into plans.json
         data = json.loads(json_path.read_text(encoding="utf-8"))
-        data["debate"] = payload["debate"]
-        data["environment"] = payload["environment"]
-        data["grounding"] = payload["grounding"]
-        data["impact"] = payload["impact"]
+        for key in ("debate", "environment", "grounding", "impact",
+                    "problem_packet", "assumptions", "open_questions", "readiness"):
+            data[key] = payload[key]
         json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return payload
 
@@ -232,24 +264,31 @@ def needs_clarification(requirement: str) -> list[str]:
 
 
 def run(
-    requirement: str,
+    requirement: RequirementLike,
     out_dir: Optional[Path] = None,
     run_tests: bool = False,
     max_repair_attempts: Optional[int] = None,
     allow_clarify: bool = False,
 ) -> dict:
-    """Convenience: the entire loop (plan -> execute) for one requirement.
+    """Convenience: the entire loop (plan -> execute) for one requirement or packet.
 
-    With ``allow_clarify=True`` the pipeline first checks whether the requirement is
-    specific enough; if not it returns ``{"needs_clarification": [...]}`` instead of
-    guessing (roadmap M7). A per-phase timing ``trace`` is always included.
+    With ``allow_clarify=True`` the pipeline first checks readiness: for a raw string it
+    runs the vagueness heuristic; for a ProblemPacket it uses the packet's own readiness
+    and blocking open questions. Either way it returns ``{"needs_clarification": [...]}``
+    instead of guessing (roadmap M7 / spec §8). A per-phase timing ``trace`` is included.
     """
     import time
 
     if allow_clarify:
-        questions = needs_clarification(requirement)
-        if questions:
-            return {"needs_clarification": questions, "requirement": requirement}
+        if isinstance(requirement, ProblemPacket):
+            packet = intake_mod.finalize(requirement)
+            blocking = [q.question for q in packet.open_questions if q.blocks_planning]
+            if blocking:
+                return {"needs_clarification": blocking, "requirement": intake_mod.requirement_text(packet)}
+        else:
+            questions = needs_clarification(requirement)
+            if questions:
+                return {"needs_clarification": questions, "requirement": requirement}
 
     out = Path(out_dir) if out_dir is not None else config.PROJECT_ROOT / "out"
     t0 = time.time()

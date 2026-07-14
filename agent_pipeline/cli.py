@@ -20,11 +20,32 @@ import runpy
 import sys
 from pathlib import Path
 
-from agent_pipeline import __version__, api, config
+from agent_pipeline import __version__, api, config, intake
 
 
 def _print(obj) -> None:
     print(json.dumps(obj, indent=2, ensure_ascii=False))
+
+
+def _resolve_requirement_arg(args: argparse.Namespace):
+    """A raw requirement string OR --intake path (spec §13). Not both, not neither."""
+    intake_path = getattr(args, "intake", None)
+    if intake_path and args.requirement:
+        print("Use either a raw requirement OR --intake, not both.", file=sys.stderr)
+        raise SystemExit(2)
+    if intake_path:
+        packet = intake.load_intake(intake_path)
+        problems = intake.validate_packet(packet)
+        if problems:
+            print("Intake is missing required fields:", file=sys.stderr)
+            for p in problems:
+                print(f"  - {p}", file=sys.stderr)
+            raise SystemExit(2)
+        return packet
+    if args.requirement:
+        return args.requirement
+    print("Provide a requirement string or --intake path/to/intake.(json|md).", file=sys.stderr)
+    raise SystemExit(2)
 
 
 def _cmd_rag(args: argparse.Namespace) -> int:
@@ -33,12 +54,21 @@ def _cmd_rag(args: argparse.Namespace) -> int:
 
 
 def _cmd_plan(args: argparse.Namespace) -> int:
-    payload = api.plan(args.requirement, out_dir=args.out)
+    req = _resolve_requirement_arg(args)
+    payload = api.plan(req, out_dir=args.out)
     d = payload["debate"]
     print(f"Provider : {payload['provider']} (live={payload['is_live']})")
+    if payload.get("problem_packet"):
+        r = payload.get("readiness") or {}
+        print(f"Intake   : packet v{payload['problem_packet'].get('version', 1)} — "
+              f"can_plan={r.get('can_plan')} can_execute={r.get('can_execute')} "
+              f"can_evaluate={r.get('can_evaluate')}")
+        for q in payload.get("open_questions", []):
+            print(f"   ❓ {q.get('question')}")
+    print(f"Impact   : risk={payload['impact']['proposed_risk_level']}")
     print(f"Plans    : {[p.get('id') for p in payload['plans']]}")
     print(f"Winner   : Plan {d['winner_id']} ({d['winner_focus']}) — margin {d['margin']}")
-    print(f"Artifacts: {args.out}/DESIGN.md, PLANS.md, DEBATE.md, plans.json")
+    print(f"Artifacts: {args.out}/DESIGN.md, PLANS.md, DEBATE.md, IMPACT.md, plans.json")
     return 0
 
 
@@ -64,7 +94,13 @@ def _cmd_execute(args: argparse.Namespace) -> int:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    result = api.run(args.requirement, out_dir=args.out, run_tests=args.run_tests)
+    req = _resolve_requirement_arg(args)
+    result = api.run(req, out_dir=args.out, run_tests=args.run_tests)
+    if result.get("needs_clarification"):
+        print("Need clarification before planning:")
+        for q in result["needs_clarification"]:
+            print(f"   ❓ {q}")
+        return 2
     d = result["plan"]["debate"]
     r = result["review"]
     print(f"Winner     : Plan {d['winner_id']} ({d['winner_focus']})")
@@ -108,7 +144,8 @@ def build_parser() -> argparse.ArgumentParser:
     pr.set_defaults(func=_cmd_rag)
 
     pp = sub.add_parser("plan", help="Phases 1-3: design + plans + debate")
-    pp.add_argument("requirement")
+    pp.add_argument("requirement", nargs="?", help="raw requirement (or use --intake)")
+    pp.add_argument("--intake", type=Path, help="path to a structured intake .json or .md")
     pp.add_argument("--out", type=Path, default=config.PROJECT_ROOT / "out")
     pp.set_defaults(func=_cmd_plan)
 
@@ -124,7 +161,8 @@ def build_parser() -> argparse.ArgumentParser:
     pe.set_defaults(func=_cmd_execute)
 
     pn = sub.add_parser("run", help="whole loop: plan -> execute")
-    pn.add_argument("requirement")
+    pn.add_argument("requirement", nargs="?", help="raw requirement (or use --intake)")
+    pn.add_argument("--intake", type=Path, help="path to a structured intake .json or .md")
     pn.add_argument("--out", type=Path, default=config.PROJECT_ROOT / "out")
     pn.add_argument("--run-tests", action="store_true", help="also run the repo's real tsc + jest in the isolated copy")
     pn.set_defaults(func=_cmd_run)
