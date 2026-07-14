@@ -55,8 +55,13 @@ def _canonical_reuse_count(plan: dict) -> int:
     return len(stems & config.CANONICAL_PRIMITIVES)
 
 
-def score_plan(plan: dict) -> Dict[str, float]:
-    """Return the four 0..1 sub-scores for a single plan."""
+def score_plan(plan: dict, packet=None) -> Dict[str, float]:
+    """Return the four 0..1 sub-scores for a single plan.
+
+    ``packet`` is accepted for forward-compatibility (spec §10.4) but does NOT change
+    the deterministic base scoring — packet-aware assessment lives in ``packet_fit`` so
+    winner selection stays reproducible. When ``packet`` is None behavior is unchanged.
+    """
     focus = plan.get("priority_focus", "")
     text = _plan_text(plan)
 
@@ -76,6 +81,104 @@ def score_plan(plan: dict) -> Dict[str, float]:
 
     return {"reuse": reuse, "blueprint": blueprint,
             "performance": performance, "speed": speed}
+
+
+# --------------------------------------------------------------------------- #
+# Packet-aware assessment (spec §10.3, §18.9) — a SEPARATE layer that does not
+# alter the deterministic winner selection. Two gates: user-fit (does the plan cover
+# the packet's acceptance criteria?) and system-fit (does it respect the architecture?).
+# --------------------------------------------------------------------------- #
+_STOP = {"the", "and", "for", "with", "that", "this", "from", "into", "are", "was",
+         "given", "when", "then", "shall", "should", "must", "will", "not", "all"}
+
+
+def _repo_rel(path: str) -> str:
+    return path[len("target_repo/"):] if str(path).startswith("target_repo/") else str(path)
+
+
+def _terms(text: str) -> set:
+    return {w.strip(".,:;!?()[]'\"/`").lower() for w in (text or "").split()
+            if len(w.strip(".,:;!?()[]'\"/`")) > 3} - _STOP
+
+
+def criterion_coverage(criterion: str, plan: dict) -> dict:
+    """Heuristic: is an acceptance criterion reflected in the plan's text/files?"""
+    cterms = _terms(criterion)
+    pterms = _terms(_plan_text(plan) + " " + " ".join(str(f) for f in plan.get("files_touched", [])))
+    overlap = cterms & pterms
+    covered = len(overlap) >= 2 or (bool(cterms) and len(overlap) / len(cterms) >= 0.34)
+    return {"criterion": criterion, "covered": bool(covered), "evidence": sorted(overlap)[:5]}
+
+
+def acceptance_fit(packet, plan: dict) -> tuple[list, float]:
+    cov = [criterion_coverage(c, plan) for c in packet.acceptance_criteria]
+    frac = round(sum(1 for c in cov if c["covered"]) / max(1, len(cov)), 3)
+    return cov, frac
+
+
+def constraints_addressed(packet, plan: dict) -> List[str]:
+    text = _plan_text(plan)
+    out = []
+    for name, val in vars(packet.constraints).items():
+        if str(val).strip().lower() in ("unknown", "not_provided", ""):
+            continue
+        if name in text or (_terms(str(val)) & _terms(text)):
+            out.append(name)
+    return out
+
+
+def system_fit(plan: dict) -> tuple[bool, List[str]]:
+    """System-fit gate: does the plan respect context.md §4 layering?"""
+    files = [_repo_rel(f) for f in plan.get("files_touched", [])]
+    reasons: List[str] = []
+    if any(f.startswith("backend/") for f in files):
+        has_controller = any("controllers/" in f for f in files)
+        has_service = any("services/" in f for f in files)
+        has_repo = any("repositories/" in f for f in files)
+        touches_db = any("/db/" in f or "database" in f for f in files)
+        if has_controller and not has_service:
+            reasons.append("backend adds a controller but no service (context.md §4: logic in services)")
+        if touches_db and not has_repo:
+            reasons.append("direct DB access without a repository (context.md §4)")
+    return (not reasons), reasons
+
+
+def enrich_plan(plan: dict, packet, impact: Optional[dict] = None) -> dict:
+    """Attach packet-derived fields to a plan (spec §10.3): criteria coverage, constraints
+    addressed, evaluation strategy, human decision points, assumptions, rollback, and the
+    user-fit + system-fit assessment. Idempotent (uses setdefault for author-provided fields)."""
+    cov, frac = acceptance_fit(packet, plan)
+    plan.setdefault("acceptance_criteria_covered", cov)
+    plan.setdefault("constraints_addressed", constraints_addressed(packet, plan))
+    plan.setdefault("evaluation_strategy",
+                    [e.description for e in packet.evaluation_method] or ["human_review"])
+    plan.setdefault("human_decision_points", list(packet.human_decision_points))
+    plan.setdefault("assumptions", [a.text for a in packet.assumptions])
+    plan.setdefault(
+        "rollback_strategy",
+        "Revert the feature branch; no schema/data migration is applied without separate approval.")
+    sys_ok, sys_reasons = system_fit(plan)
+    plan["packet_fit"] = {
+        "acceptance_coverage": frac,
+        "user_fit_pass": frac >= 0.5,
+        "system_fit_pass": sys_ok,
+        "system_fit_reasons": sys_reasons,
+    }
+    return plan
+
+
+def assess_plans(plans: List[dict], packet, impact: Optional[dict] = None) -> dict:
+    """Enrich every plan and return a compact evaluation summary (per-plan fit)."""
+    for p in plans:
+        enrich_plan(p, packet, impact)
+    return {
+        "packet_aware": True,
+        "plans": [{"id": p.get("id"),
+                   "user_fit_pass": p["packet_fit"]["user_fit_pass"],
+                   "system_fit_pass": p["packet_fit"]["system_fit_pass"],
+                   "acceptance_coverage": p["packet_fit"]["acceptance_coverage"]}
+                  for p in plans],
+    }
 
 
 @dataclass

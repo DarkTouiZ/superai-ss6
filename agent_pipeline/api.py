@@ -98,6 +98,15 @@ def plan(requirement: RequirementLike, out_dir: Optional[Path] = None) -> dict:
 
     plan_set.plans = normalize.normalize_plans(plan_set.plans)
     design.artifacts = normalize.normalize_design(design.artifacts)
+
+    # Packet-aware enrichment (spec §10.3, §18.9): map acceptance criteria → plan coverage,
+    # attach rollback/constraints/assumptions, and compute user-fit + system-fit — a layer
+    # that does NOT change the deterministic winner selection below.
+    evaluation = None
+    if packet is not None:
+        from agent_pipeline.agents.evaluator import assess_plans
+        evaluation = assess_plans(plan_set.plans, packet, impact.to_dict())
+
     debate = EvaluatorAgent().evaluate(plan_set.plans)
 
     payload = {
@@ -111,6 +120,7 @@ def plan(requirement: RequirementLike, out_dir: Optional[Path] = None) -> dict:
         "environment": env.summary(),
         "grounding": grounding_mod.snapshot(chunks),
         "impact": impact.to_dict(),
+        "evaluation": evaluation,
         **_packet_payload(packet),
     }
     if out_dir is not None:
@@ -121,7 +131,7 @@ def plan(requirement: RequirementLike, out_dir: Optional[Path] = None) -> dict:
         impact_mod.write_impact_md(impact, out_dir, requirement=requirement)
         # fold the debate result + environment + grounding + impact + packet into plans.json
         data = json.loads(json_path.read_text(encoding="utf-8"))
-        for key in ("debate", "environment", "grounding", "impact",
+        for key in ("debate", "environment", "grounding", "impact", "evaluation",
                     "problem_packet", "assumptions", "open_questions", "readiness"):
             data[key] = payload[key]
         json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")

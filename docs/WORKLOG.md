@@ -104,7 +104,21 @@ tested commit on branch `ss6/spec-upgrade` (branched from `main`).
 - **Verify:** full suite **82 → 93**; CLI flow confirmed end-to-end: `execute` blocks
   (risk=high) → `ss6 approve` → `execute` proceeds.
 
+### Phase 5 — packet/env-aware agents (spec §10.3, §18.9) — commit `<pending>`
+- `evaluator.py` gains a packet-aware layer that does NOT change the deterministic winner
+  selection (§10.4): `criterion_coverage` / `acceptance_fit` (map each acceptance criterion
+  to plan text/files), `constraints_addressed`, `system_fit` (context.md §4 layering gate:
+  controller-without-service / DB-without-repository), `enrich_plan` (adds
+  acceptance_criteria_covered, constraints_addressed, evaluation_strategy,
+  human_decision_points, assumptions, rollback_strategy, and a user-fit + system-fit
+  `packet_fit`), and `assess_plans`. `score_plan(plan, packet=None)` accepts a packet for
+  signature-compat but base scoring is unchanged.
+- `api.plan` enriches every plan and records an `evaluation` summary in `plans.json` when a
+  packet is used. Design/Architect/Developer already receive packet context via
+  `requirement_text(packet)` (criteria, constraints, non-goals) from Phase 3.
+- **Verify:** full suite **93 → 102**; raw-string path unaffected (`evaluation` is null).
+
 ### Next up
-- Phase 5 (packet/env-aware agents: criteria coverage, rollback, user-fit + system-fit
-  evaluator), Phase 6 (evidence-complete REVIEW.md), Phase 7 (honest benchmark +
-  docs/version/LICENSE alignment). Then the spec §25 definition-of-done review.
+- Phase 6 (evidence-complete REVIEW.md: acceptance-criteria checklist w/ evidence, changed
+  files+diff, approval, checks status, repair history), Phase 7 (honest benchmark +
+  docs/version/LICENSE/LangGraph/clarification alignment). Then the spec §25 DoD review.
