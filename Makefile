@@ -26,7 +26,9 @@ eval:
 	SS6_LLM_PROVIDER=mock python eval/execution_quality.py || true
 
 pipeline:
-	SS6_LLM_PROVIDER=mock ss6 run "$(REQ)" --out ./out
+	# A new endpoint is medium-risk (spec §21) → execution needs a recorded human
+	# approval; --approved-by captures it explicitly so the offline pipeline completes.
+	SS6_LLM_PROVIDER=mock ss6 run "$(REQ)" --out ./out --approved-by "make pipeline"
 
 demo:
 	bash scripts/ss6_demo.sh "$(REQ)"

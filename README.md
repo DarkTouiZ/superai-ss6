@@ -34,7 +34,7 @@ the shared pipeline state lives in `graph/state.py`; there is no `StateGraph` ye
 - **Evidence-complete `REVIEW.md`:** acceptance-criteria checklist, grounding, approval,
   honest `PASS/FAIL/UNVERIFIED` checks, and explicit human decisions.
 - **Safety fixes:** path-containment, repair-loop isolation, and honest gate status.
-- **Tests:** 35 → **110** passing.
+- **Tests:** 35 → **119** passing.
 
 ### What's new in v1.1
 
@@ -75,8 +75,14 @@ pip install -e .                 # editable install; adds the `ss6` command
 ss6 rag "how is the delivery fee computed from the cart total?"   # Phase 1: retrieve
 ss6 plan "Add a Top Customers by Spend screen" --out ./out        # Phases 1–3 → out/
 ss6 debate --plans out/plans.json                                 # re-score plans
-ss6 execute --plans out/plans.json --out ./out                    # Phases 3b–4 → REVIEW.md (halts)
-ss6 run "Add ALL Member points redemption at checkout" --out ./out # whole loop
+
+# Phases 3b–4. A medium/high-risk change (new endpoint/screen/schema) requires a
+# recorded human approval before execution (spec §21); approve the winning plan, then run:
+ss6 approve --plans out/plans.json --plan B --approved-by "Safe"  # record the decision
+ss6 execute --plans out/plans.json --out ./out                    # → REVIEW.md (halts)
+
+# whole loop; --approved-by records the approval inline so execution proceeds
+ss6 run "Add ALL Member points redemption at checkout" --out ./out --approved-by "Safe"
 ss6 eval debate --plans out/plans.json                            # run an eval harness
 ```
 
@@ -106,8 +112,9 @@ The gate can run the target repo's **real `tsc` + `jest`** (not just syntactic
 checks) inside the isolated branch copy:
 
 ```bash
-ss6 run "Add a Top Customers by Spend analytics endpoint" --out ./out --run-tests
+ss6 run "Add a Top Customers by Spend analytics endpoint" --out ./out --run-tests --approved-by "Safe"
 #   Winner : Plan B (reuse)
+#   Risk   : medium (new endpoint) → approval recorded ("Safe")
 #   PASS   tsc  (real check)   ← the generated change actually compiles
 #   PASS   jest (real check)   ← the generated unit test passes
 #   Gate   : PASS  →  halts for human review (nothing merged)

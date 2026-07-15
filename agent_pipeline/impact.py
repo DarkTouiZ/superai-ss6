@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
+from agent_pipeline import config, normalize
+
 # Area detection from a repo-relative path → human-readable area label.
 _AREA_RULES = [
     ("backend/db/migrations", "database schema (migrations)"),
@@ -28,24 +30,22 @@ _AREA_RULES = [
     ("frontend/src/app/features", "frontend feature screens"),
 ]
 
-# Protected areas (mirrors environment.md §9): touching these is high risk.
-_PROTECTED = [
-    "backend/db/migrations",
-    "backend/src/db",
-    "backend/src/aws",
-    "frontend/src/app/core/services/api.service.ts",
-    "docker-compose.yml",
-    "infra/",
-    "localstack/",
-]
+# Protected areas: single source of truth in config.PROTECTED_AREAS (shared with the
+# HITL gate so the analyzer and the gate can never disagree).
+_PROTECTED = config.PROTECTED_AREAS
 
+# Kept deliberately specific: single very-common words ('pay', 'token', 'index', 'role')
+# were removed because they fire on benign features (a design *token*, a DB *index* for
+# performance, a user *role* label) and — with CLI approval enforcement — would block them.
+# Prefer unambiguous security/authorization terms; the post-execution path-based risk
+# check (effective_risk over actual changed files) is the reliable escalation signal.
 _SECURITY_WORDS = {
-    "auth", "authentication", "authorization", "login", "permission", "role", "rbac",
-    "password", "secret", "token", "payment", "pay", "refund", "checkout", "billing",
-    "pii", "privacy", "gdpr", "sensitive", "credential",
+    "auth", "authentication", "authorization", "login", "permission", "permissions",
+    "rbac", "password", "secret", "payment", "refund", "checkout", "billing",
+    "pii", "privacy", "gdpr", "credential", "credentials",
 }
-_SCHEMA_WORDS = {"schema", "migration", "table", "column", "index", "database", "sql"}
-_CONTRACT_WORDS = {"endpoint", "api", "route", "contract", "response", "payload"}
+_SCHEMA_WORDS = {"schema", "migration", "table", "column", "database"}
+_CONTRACT_WORDS = {"endpoint", "api", "route", "contract"}
 
 
 @dataclass

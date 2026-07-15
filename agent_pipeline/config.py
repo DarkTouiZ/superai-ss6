@@ -111,7 +111,25 @@ GIT_AUTHOR_EMAIL = os.getenv("SS6_GIT_EMAIL", "ss6-agent@local")
 # the hard guard; this allowlist is a second fence so a generated path can't drop a
 # file at an unexpected repo location. Kept as data so it's easy to review/extend.
 ALLOWED_WRITE_ROOTS = {"backend", "frontend", "infra", "localstack"}
-ALLOWED_WRITE_FILES = {"docker-compose.yml", "README.md", ".gitignore"}
+ALLOWED_WRITE_FILES = {
+    "docker-compose.yml", "README.md", ".gitignore",
+    # Common repo-root tooling a legitimate change may touch (was too strict before).
+    "package.json", "package-lock.json", "tsconfig.json", "tsconfig.base.json",
+    ".env.example", "Makefile",
+}
+
+# Protected areas: changes here are high-risk and need explicit human approval.
+# SINGLE SOURCE OF TRUTH (mirrored descriptively in environment.md §9) — the impact
+# analyzer and the HITL gate both read this list so they can never drift apart.
+PROTECTED_AREAS = [
+    "backend/db/migrations",
+    "backend/src/db",
+    "backend/src/aws",
+    "frontend/src/app/core/services/api.service.ts",
+    "docker-compose.yml",
+    "infra/",
+    "localstack/",
+]
 
 # Real backend/frontend checks reuse a cached node_modules (symlink) with NO network.
 # If the cache is absent we do NOT silently run `npm install` (which would hit the

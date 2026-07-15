@@ -88,6 +88,10 @@ class GateOutcome:
     feedback: List[str]
     review: "ReviewResult"
     tests: list = field(default_factory=list)
+    # True when the only reason the gate did not pass is a required check that could not
+    # RUN (UNVERIFIED) — compliance is clean and nothing FAILED. No code change can fix a
+    # missing tool, so the repair loop must halt rather than regenerate (spec §22.3).
+    unverified_only: bool = False
 
 
 def gate_feedback(review: "ReviewResult", tests: list | None = None) -> List[str]:
@@ -279,17 +283,10 @@ def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=Non
     out_dir.mkdir(parents=True, exist_ok=True)
     md_path = out_dir / "REVIEW.md"
     checks = checks or []
-    # Honest reduction of the real checks (mirrors checks.gate_status without the
-    # import): an UNVERIFIED required check is NOT a pass (spec §22.3).
-    statuses = {getattr(c, "status", "") for c in checks}
-    if "FAIL" in statuses:
-        checks_status = "FAIL"
-    elif "UNVERIFIED" in statuses:
-        checks_status = "UNVERIFIED"
-    elif "PASS" in statuses:
-        checks_status = "PASS"
-    else:
-        checks_status = "NOT_REQUIRED"
+    # Use the canonical reducer so the human-facing verdict can never drift from the
+    # machine gate (spec §22.3). checks imports only config — no cycle with review.
+    from agent_pipeline import checks as checks_mod
+    checks_status = checks_mod.gate_status(checks)
     tests_ok = checks_status not in ("FAIL", "UNVERIFIED")
     gate_ok = review.passed and tests_ok
     if not review.passed:
@@ -331,17 +328,29 @@ def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=Non
         lines.append("")
     if approval is not None:
         req = approval.get("pre_execution_approval_required")
+        sufficient = approval.get("approval_sufficient_for_executed_change", True)
         rec = approval.get("pre_execution_approval_recorded")
-        state = "not required" if not req else ("recorded ✅" if rec else "MISSING ⚠️")
+        state = "not required" if not req else (
+            "recorded ✅" if (rec and sufficient) else "MISSING/INSUFFICIENT ⚠️")
+        exec_risk = approval.get("risk_level", "unknown")
+        decl_risk = approval.get("declared_risk_level", exec_risk)
+        risk_line = f"- Effective risk (from files actually written): **{exec_risk}**"
+        if approval.get("post_execution_escalation"):
+            risk_line += (f" — ⚠️ ESCALATED from declared **{decl_risk}**; the executed diff "
+                          f"touched protected area(s): {', '.join(approval.get('executed_protected_areas', []))}")
         lines += [
             "## Risk & human approval (spec §21)",
             "",
-            f"- Effective risk: **{approval.get('risk_level', 'unknown')}** — "
-            f"{'; '.join(approval.get('risk_reasons', []) or ['n/a'])}",
+            risk_line,
+            f"  - reasons: {'; '.join(approval.get('risk_reasons', []) or ['n/a'])}",
             f"- Pre-execution approval: **{state}**"
             + (f" (enforced={approval.get('enforced')})" if req else ""),
-            "- Final human review before merge: **required** — the pipeline never auto-merges.",
         ]
+        if req and not sufficient:
+            lines.append("  - ⚠️ The executed change needs approval it does not have — treat as "
+                         "**unapproved** and re-approve for the escalated risk before merge.")
+        lines.append(
+            "- Final human review before merge: **required** — the pipeline never auto-merges.")
         m = approval.get("matched_approval")
         if m:
             lines.append(f"  - approved by `{m.get('approved_by')}` at {m.get('approved_at')} "

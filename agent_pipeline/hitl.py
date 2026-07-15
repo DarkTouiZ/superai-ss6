@@ -18,15 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Literal, Optional
 
-RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
+from agent_pipeline import normalize
 
-# Protected roots that make a change high-risk if the plan will modify them
-# (mirrors environment.md §9 / impact._PROTECTED).
-_PROTECTED = [
-    "backend/db/migrations", "backend/src/db", "backend/src/aws",
-    "frontend/src/app/core/services/api.service.ts",
-    "docker-compose.yml", "infra/", "localstack/",
-]
+RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 
 Decision = Literal["approved", "changes_requested", "rejected"]
 Stage = Literal["packet", "plan", "risk_exception", "final_review"]
@@ -49,30 +43,30 @@ class HumanApproval:
             self.approved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _repo_rel(path: str) -> str:
-    return path[len("target_repo/"):] if path.startswith("target_repo/") else path
-
-
 def plan_protected_touches(plan: dict) -> List[str]:
     """Protected areas the chosen plan declares it will touch (files_touched)."""
-    files = [_repo_rel(str(f)) for f in (plan.get("files_touched") or [])]
-    return sorted({pa for f in files for pa in _PROTECTED if f.startswith(pa)})
+    return normalize.protected_touches(plan.get("files_touched") or [])
+
+
+def risk_from_files(impact: Optional[dict], files) -> tuple[str, List[str]]:
+    """Effective risk from the impact level + an explicit set of file paths.
+
+    Used both pre-execution (the plan's declared files_touched) and post-execution (the
+    ACTUAL changed files from git), so a change that writes a protected area escalates to
+    high even if the requirement/plan looked benign. Returns ``(risk_level, reasons)``."""
+    reasons: List[str] = list((impact or {}).get("risk_reasons", []))
+    risk = (impact or {}).get("proposed_risk_level", "low")
+    touched = normalize.protected_touches(files or [])
+    if touched:
+        reasons.append(f"modifies protected area(s): {', '.join(touched)}")
+        if RISK_ORDER["high"] > RISK_ORDER.get(risk, 0):
+            risk = "high"
+    return risk, reasons
 
 
 def effective_risk(impact: Optional[dict], chosen_plan: Optional[dict]) -> tuple[str, List[str]]:
-    """Combine the impact risk level with the chosen plan's declared file touches.
-
-    Returns ``(risk_level, reasons)``. The plan modifying a protected area escalates to
-    high even if the impact analysis (from retrieval grounding) proposed lower."""
-    reasons: List[str] = []
-    risk = (impact or {}).get("proposed_risk_level", "low")
-    reasons += list((impact or {}).get("risk_reasons", []))
-    touched = plan_protected_touches(chosen_plan or {})
-    if touched:
-        reasons.append(f"chosen plan will modify protected area(s): {', '.join(touched)}")
-        if RISK_ORDER.get("high", 2) > RISK_ORDER.get(risk, 0):
-            risk = "high"
-    return risk, reasons
+    """Effective risk from the impact level + the chosen plan's DECLARED files_touched."""
+    return risk_from_files(impact, (chosen_plan or {}).get("files_touched") or [])
 
 
 def requires_pre_execution_approval(risk_level: str) -> bool:
@@ -123,10 +117,12 @@ def find_matching_approval(
     packet version, plan, and environment version, covering at least this risk level
     (spec §21.2). A materially changed packet (new version) invalidates a stale approval.
     """
+    if plan_id is None:
+        return None  # a plan with no id can never be matched (no wildcard authorization)
     for a in approvals:
         if (a.stage == "plan" and a.decision == "approved"
                 and a.packet_version == packet_version
-                and (plan_id is None or a.plan_id == plan_id)
+                and a.plan_id == plan_id
                 and a.environment_version == environment_version
                 and RISK_ORDER.get(a.risk_level, 0) >= RISK_ORDER.get(risk_level, 0)):
             return a
@@ -149,9 +145,18 @@ class ApprovalCheck:
 def check_execution_allowed(
     out_dir: Path, *, impact: Optional[dict], chosen_plan: Optional[dict],
     packet_version: int, environment_version: int,
+    changed_files: Optional[List[str]] = None,
 ) -> ApprovalCheck:
-    """Decide whether medium/high-risk execution may proceed given recorded approvals."""
-    risk, reasons = effective_risk(impact, chosen_plan)
+    """Decide whether medium/high-risk execution may proceed given recorded approvals.
+
+    Pre-execution (``changed_files=None``) judges risk from the plan's DECLARED
+    files_touched. Post-execution, pass the ACTUAL ``changed_files`` from git so a plan
+    that under-declared its touches (e.g. also wrote a migration) is re-risked and its
+    prior lower-risk approval no longer suffices (spec §21 escalation)."""
+    if changed_files is not None:
+        risk, reasons = risk_from_files(impact, changed_files)
+    else:
+        risk, reasons = effective_risk(impact, chosen_plan)
     required = requires_pre_execution_approval(risk)
     if not required:
         return ApprovalCheck(risk_level=risk, required=False, approved=True, reasons=reasons)

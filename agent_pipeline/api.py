@@ -204,7 +204,7 @@ def execute(
             store_dir, impact=impact_d, chosen_plan=winner,
             packet_version=packet_version, environment_version=env_version,
         )
-        if check.blocked:
+        if check.blocked:  # blocked on the plan's DECLARED risk, before any code runs
             return {
                 "awaiting_human_review": True,
                 "approval_required": True,
@@ -231,11 +231,15 @@ def execute(
         tests = checks.run_selected_checks(workdir, changed) if run_tests else []
         tests_ok = checks.checks_passed(tests) if run_tests else True
         passed = review.passed and tests_ok
+        # Missing-tool UNVERIFIED (not a code failure) must not drive the repair loop.
+        unverified_only = (not passed and review.passed
+                           and checks.gate_status(tests) == checks.UNVERIFIED)
         return GateOutcome(
             passed=passed,
             feedback=gate_feedback(review, tests),
             review=review,
             tests=tests,
+            unverified_only=unverified_only,
         )
 
     exec_result = DeveloperAgent().execute(
@@ -265,18 +269,31 @@ def execute(
     # payload predates the environment contract (spec §19.4).
     env_summary = payload.get("environment") or environment_mod.load_environment().summary()
 
-    # Effective risk + recorded-approval status for the review packet (spec §21).
-    eff_risk, eff_reasons = hitl.effective_risk(impact_d, winner)
-    approval_check = hitl.check_execution_allowed(
+    # Post-execution risk from the ACTUAL changed files (spec §21 escalation): a plan
+    # that under-declared its touches and wrote a protected area is re-risked here, and a
+    # prior lower-risk approval no longer suffices.
+    executed_check = hitl.check_execution_allowed(
         store_dir, impact=impact_d, chosen_plan=winner,
         packet_version=packet_version, environment_version=env_version,
+        changed_files=exec_result.changed_files,
     )
+    declared_risk, _ = hitl.effective_risk(impact_d, winner)
+    executed_protected = normalize.protected_touches(exec_result.changed_files)
+    escalated = (hitl.RISK_ORDER.get(executed_check.risk_level, 0)
+                 > hitl.RISK_ORDER.get(declared_risk, 0))
     approval_summary = {
-        "risk_level": eff_risk,
-        "risk_reasons": eff_reasons,
-        "pre_execution_approval_required": approval_check.required,
-        "pre_execution_approval_recorded": approval_check.approved and approval_check.required,
-        "matched_approval": approval_check.matched,
+        "risk_level": executed_check.risk_level,          # risk of what was ACTUALLY written
+        "declared_risk_level": declared_risk,             # risk of what the plan claimed
+        "risk_reasons": executed_check.reasons,
+        "executed_protected_areas": executed_protected,
+        "post_execution_escalation": escalated,
+        "pre_execution_approval_required": executed_check.required,
+        "pre_execution_approval_recorded": executed_check.approved and executed_check.required,
+        "matched_approval": executed_check.matched,
+        # If the executed change needs approval it does not have, the human halt must treat
+        # this as unapproved even though a lower-risk approval was recorded pre-execution.
+        "approval_sufficient_for_executed_change": (not executed_check.required)
+                                                   or executed_check.approved,
         "enforced": bool(require_approval),
         "final_human_review_required": True,   # always — never auto-merge (§21.1)
     }
@@ -300,7 +317,8 @@ def execute(
         "workdir": exec_result.workdir,
         "environment": env_summary,
         "approval": approval_summary,
-        "risk_level": eff_risk,
+        "risk_level": approval_summary["risk_level"],
+        "post_execution_escalation": approval_summary["post_execution_escalation"],
         "changed_files": exec_result.changed_files,
         "provider": exec_result.provider,
         "is_live": exec_result.is_live,

@@ -148,3 +148,25 @@ tested commit on branch `ss6/spec-upgrade` (branched from `main`).
 All P1 safety defects fixed; environment.md + ProblemPacket + grounding + risk-based HITL +
 evidence-complete REVIEW.md in place; mock labeled as consistency not feature-quality; public
 claims aligned. Branch `ss6/spec-upgrade` holds one reviewable, tested commit per phase.
+
+### Multi-agent code review of the branch (user-requested) — commit `<pending>`
+Ran an 8-angle review over the whole `main...HEAD` diff; verified findings against the code
+and fixed all 10 + the cleanup tier:
+- **#1 (backward-compat):** CLI forced approval on every run, so `make pipeline` /
+  `ss6_demo.sh` / README quickstarts blocked (exit 3). Fixed the docs/demo/Makefile to use
+  the intended approval flow (`--approved-by` / `ss6 approve`) and narrowed the risk keywords.
+- **#2 (security):** risk was judged only from the plan's declared files_touched — now
+  re-checked against the ACTUAL `exec_result.changed_files`; an under-declared write to a
+  protected area escalates risk and marks a prior lower-risk approval insufficient (REVIEW.md
+  shows the escalation).
+- **#3:** infra/docker change under `--run-tests` now reports UNVERIFIED (needs human), not a
+  silent pass. **#5:** null plan-id can't wildcard-authorize. **#6:** diff-header regex requires
+  `a/`/`b/` so a removed `-- ` SQL comment can't false-reject a migration diff. **#7:** dropped
+  over-broad risk words (`role`/`token`/`index`/`pay`). **#8:** a missing tool (UNVERIFIED) no
+  longer spins the repair loop. **#9:** allowlist permits common root files (package.json,
+  tsconfig.json, …). **#A4:** diff manifest reads the actually-patched file.
+- **Cleanup:** single source of truth for the `target_repo/` prefix-strip (`normalize.repo_rel`)
+  and protected areas (`config.PROTECTED_AREAS`, shared by the analyzer and the gate);
+  `review.py` uses `checks.gate_status` (no more inline copy); `ExecResult` uses
+  `field(default_factory)`; consolidated the double HITL computation.
+- **Verify:** full suite **110 → 119**; `ss6 run --approved-by` completes end-to-end again.

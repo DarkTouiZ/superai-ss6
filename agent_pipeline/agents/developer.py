@@ -13,29 +13,17 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
 from agent_pipeline import config, vcs
 from agent_pipeline.llm import get_llm
-from agent_pipeline.normalize import canonical_path
+from agent_pipeline.normalize import canonical_path, repo_rel as _normalize_rel
 
 
 class PathViolation(ValueError):
     """A generated path tried to escape the isolated repo or hit a disallowed root."""
-
-
-def _normalize_rel(path: str) -> str:
-    """Strip an optional ``target_repo/`` prefix and normalize to POSIX separators.
-
-    Only the *exact* ``target_repo/`` prefix is stripped — ``target_repo-evil/x`` is
-    left intact so it fails the allowlist rather than being silently accepted.
-    """
-    p = (path or "").strip().replace("\\", "/")
-    if p.startswith("target_repo/"):
-        p = p[len("target_repo/"):]
-    return p
 
 
 def _safe_dest(rel: str, wc_root: Path) -> Path:
@@ -69,7 +57,10 @@ def _safe_dest(rel: str, wc_root: Path) -> Path:
 
 
 # ``+++ b/path`` / ``--- a/path`` and ``diff --git a/path b/path`` headers.
-_DIFF_AB = re.compile(r"^(?:\+\+\+|---)\s+(?:[ab]/)?(.+?)\s*$", re.MULTILINE)
+# The ``[ab]/`` prefix is REQUIRED so a REMOVED source line that begins with ``-- ``
+# (e.g. a SQL comment, rendered ``--- ...`` in the diff body) is not mistaken for a file
+# header and its comment text wrongly treated as an out-of-repo path.
+_DIFF_AB = re.compile(r"^(?:\+\+\+|---) [ab]/(.+?)\s*$", re.MULTILINE)
 _DIFF_GIT = re.compile(r"^diff --git a/(.+?) b/(.+?)\s*$", re.MULTILINE)
 
 
@@ -111,17 +102,11 @@ class ExecResult:
     provider: str
     is_live: bool
     attempts: int = 1                       # how many generate→gate rounds ran
-    attempt_log: List[dict] = None          # [{round, passed, violations[]}]
+    attempt_log: List[dict] = field(default_factory=list)   # [{round, passed, violations[]}]
     max_attempts: int = 1
     repaired: bool = False                  # True if it failed then passed via repair
     gate_review: object = None              # final ReviewResult (set by the gate)
-    gate_tests: List = None                 # final real-check results (set by the gate)
-
-    def __post_init__(self) -> None:
-        if self.attempt_log is None:
-            self.attempt_log = []
-        if self.gate_tests is None:
-            self.gate_tests = []
+    gate_tests: List = field(default_factory=list)          # final real-check results
 
 
 def _slug(text: str) -> str:
@@ -239,8 +224,9 @@ class DeveloperAgent:
             if "diff" in f:
                 # roadmap M3 (full): apply a real unified diff via git apply --3way.
                 # First validate EVERY path the diff references, not just the wrapper.
+                targets = _diff_target_paths(f["diff"])
                 bad = []
-                for tp in _diff_target_paths(f["diff"]):
+                for tp in targets:
                     try:
                         _safe_dest(tp, wc.path)
                     except PathViolation as exc:
@@ -251,7 +237,11 @@ class DeveloperAgent:
                 ok, msg = vcs.apply_patch(wc, f["diff"])
                 if not ok:
                     conflicts.append(f"{rel}: patch did not apply ({msg})")
-                final = dest.read_text(encoding="utf-8") if dest.exists() else ""
+                # Read content from the file the diff ACTUALLY patched, not the wrapper
+                # path (they can differ), so the manifest reflects the real change.
+                patched = next((d for d in (_safe_dest(tp, wc.path) for tp in targets)
+                                if d.exists()), dest)
+                final = patched.read_text(encoding="utf-8") if patched.exists() else ""
                 effective.append({"path": f["path"], "content": final, "patched": True})
             elif edits is not None:
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -322,6 +312,10 @@ class DeveloperAgent:
                 {"round": attempt, "passed": outcome.passed, "violations": list(outcome.feedback)}
             )
             if outcome.passed:
+                break
+            # A missing-tool UNVERIFIED (no compliance violation, nothing failed) can't be
+            # fixed by regenerating code — halt instead of burning repair attempts (§22.3).
+            if not conflicts and getattr(outcome, "unverified_only", False):
                 break
             feedback = outcome.feedback  # carry violations into the next attempt
 

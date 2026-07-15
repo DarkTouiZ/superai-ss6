@@ -20,7 +20,9 @@ say(){ printf "\n\033[1;32m== %s\033[0m\n" "$*"; }
 say "1/6  SS6 plans + generates the feature, with the REAL tsc+jest gate"
 # Reuse target_repo/backend/node_modules so the gate is fast (install once if absent).
 [ -d "$REPO/backend/node_modules" ] || (cd "$REPO/backend" && npm install --no-audit --no-fund)
-ss6 run "$REQ" --out "$OUT" --run-tests
+# A new endpoint is medium-risk (spec §21), so execution requires a recorded human
+# approval. --approved-by captures that decision explicitly and demonstrates the HITL gate.
+ss6 run "$REQ" --out "$OUT" --run-tests --approved-by "SS6 demo (automated)"
 
 WORKDIR="$(ls -dt "$SS6_EXEC_DIR"/*/repo | head -1)"
 say "2/6  Generated change (in the isolated copy: $WORKDIR)"

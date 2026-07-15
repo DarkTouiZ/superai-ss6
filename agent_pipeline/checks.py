@@ -139,25 +139,28 @@ def run_frontend_checks(workdir: str | Path) -> List[CheckResult]:
                         "tsc not available" if fe_ok is None else ("type-check clean" if fe_ok else fe_out))]
 
 
-def _repo_rel(path: str) -> str:
-    return path[len("target_repo/"):] if path.startswith("target_repo/") else path
-
-
 def run_selected_checks(workdir: str | Path, changed_files: List[str] | None) -> List[CheckResult]:
     """Pick the check suites from the ACTUAL changed paths (spec §22.4).
 
-    Backend code change → backend tsc/jest. Frontend change → frontend typecheck.
-    If neither area was touched there is nothing to build/test — that is honestly
-    NOT_REQUIRED (not a silent pass).
+    Backend code change → backend tsc/jest. Frontend change → frontend typecheck. An
+    infra/docker/compose change has no automated check but MUST NOT pass silently — it is
+    reported UNVERIFIED (needs human validation), so `--run-tests` on an infra-only change
+    cannot yield gate_passed=True. If nothing verifiable was touched → NOT_REQUIRED.
     """
-    paths = [_repo_rel(p) for p in (changed_files or [])]
+    from agent_pipeline import normalize
+    paths = [normalize.repo_rel(p) for p in (changed_files or [])]
     touches_backend = any(p.startswith("backend/") for p in paths)
     touches_frontend = any(p.startswith("frontend/") for p in paths)
+    touches_infra = any(p.startswith(("infra/", "localstack/")) or p == "docker-compose.yml"
+                        for p in paths)
     results: List[CheckResult] = []
     if touches_backend:
         results += run_backend_checks(workdir)
     if touches_frontend:
         results += run_frontend_checks(workdir)
+    if touches_infra:
+        results.append(CheckResult("infra", UNVERIFIED,
+                                   "infra/compose change has no automated check — needs human validation"))
     if not results:
         results.append(CheckResult("scope", NOT_REQUIRED,
                                    "no backend/ or frontend/ code changed; nothing to build/test"))

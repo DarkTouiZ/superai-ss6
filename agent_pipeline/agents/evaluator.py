@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from agent_pipeline import config
-from agent_pipeline.normalize import canonical_primitive
+from agent_pipeline.normalize import canonical_primitive, repo_rel as _repo_rel
 
 DIMENSIONS = ("reuse", "blueprint", "performance", "speed")
 
@@ -90,10 +90,6 @@ def score_plan(plan: dict, packet=None) -> Dict[str, float]:
 # --------------------------------------------------------------------------- #
 _STOP = {"the", "and", "for", "with", "that", "this", "from", "into", "are", "was",
          "given", "when", "then", "shall", "should", "must", "will", "not", "all"}
-
-
-def _repo_rel(path: str) -> str:
-    return path[len("target_repo/"):] if str(path).startswith("target_repo/") else str(path)
 
 
 def _terms(text: str) -> set:
