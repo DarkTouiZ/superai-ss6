@@ -155,34 +155,41 @@ feeds any violations back to the Developer, which regenerates — editing existi
 **surgical anchored edits or unified diffs** rather than overwriting them — until the gate
 passes or the `SS6_MAX_REPAIR` budget is exhausted, then halts for review.
 
+In **v1.2** this loop is wrapped in a traceable, human-accountable contract: a structured
+**ProblemPacket** (`--intake`) defines a measurable done; `environment.md` maps the current
+system; planning is grounded in **actual retrieved code** and a pre-planning **impact/risk**
+analysis; **medium/high-risk changes require a recorded human approval** (`ss6 approve`) before
+execution and are re-checked against the files actually written; and `REVIEW.md` maps every
+acceptance criterion and system rule to executed evidence. See [`docs/WORKLOG.md`](docs/WORKLOG.md).
+
 ## Layout
 
 ```
 .
-├── context.md                  # System Blueprint: architectural + design rules
+├── context.md                  # System Blueprint: normative architecture + design rules (MUST)
+├── environment.md              # operational system map + integration contract (how it IS)
 ├── ROADMAP.md                  # milestone status (M1–M7)
-├── requirements.txt
+├── docs/WORKLOG.md             # running log of the v1.2 spec-upgrade work
+├── examples/                   # feature-intake template + top_customers_intake.{json,md}
 ├── agent_pipeline/
-│   ├── config.py               # central config (paths, model names, k, repair budget)
-│   ├── api.py                  # callable API: retrieve/plan/debate/execute/run (+ repair loop)
-│   ├── review.py               # compliance + security gate; repair feedback (M1/M7)
-│   ├── vcs.py                  # isolated git copy; anchored edits + git apply --3way (M3)
-│   ├── rag/
-│   │   ├── ingest.py           # parse codebase + context.md → chunks
-│   │   ├── embeddings.py       # SentenceTransformer w/ offline fallback
-│   │   ├── lexical.py          # BM25 + OOV-coverage offline retriever (M5)
-│   │   ├── vector_store.py     # ChromaDB persistent store wrapper
-│   │   └── retriever.py        # high-level query API (semantic | BM25)
-│   ├── graph/state.py          # shared LangGraph pipeline state
-│   └── agents/                 # Design/Architect/Evaluator/Developer (+ repair loop, M2)
-├── scripts/
-│   ├── init_rag.py             # Week 1 entrypoint: build the index
-│   └── query_rag.py            # manual query CLI
-├── eval/
-│   ├── rag_eval_dataset.json   # labeled queries → relevant files
-│   └── recall_at_k.py          # Recall@k / MRR harness
+│   ├── config.py               # central config (paths, repair budget, write-allowlist, PROTECTED_AREAS)
+│   ├── api.py                  # callable API: retrieve/plan/debate/execute/run/approve
+│   ├── intake.py               # ProblemPacket: structured intake, readiness, requirement_text
+│   ├── environment.py          # load/validate environment.md + git freshness
+│   ├── grounding.py            # bounded, cited code chunks shared by Design/Architect
+│   ├── impact.py               # pre-planning ImpactAnalysis + proposed risk level
+│   ├── hitl.py                 # risk-based human approval records + gate
+│   ├── review.py               # compliance/security gate; evidence-complete REVIEW.md
+│   ├── checks.py               # real tsc/jest gate; honest PASS/FAIL/UNVERIFIED/NOT_REQUIRED
+│   ├── vcs.py                  # isolated git copy; reset-to-baseline; anchored edits + 3way apply
+│   ├── normalize.py            # shared path helpers (repo_rel, protected_touches)
+│   ├── rag/                    # ingest / embeddings / lexical(BM25) / vector_store / retriever
+│   ├── graph/state.py          # shared pipeline state (imperative staging; LangGraph-compatible)
+│   └── agents/                 # Design / Architect / Evaluator / Developer (+ repair loop)
+├── scripts/                    # init_rag.py, query_rag.py, ss6_demo.sh (closed-loop demo)
+├── eval/                       # Recall@k, plan/debate/design/execution quality, impact_study
 ├── target_repo/                # eleven-7: MOCK goods-delivery app (Node/Angular/MySQL/AWS) — the test bed
-└── tests/test_rag.py
+└── tests/                      # 119 tests (rag, intake, environment, grounding, impact, hitl, isolation, …)
 ```
 
 ## Quickstart
