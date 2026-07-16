@@ -20,7 +20,14 @@ import json
 from pathlib import Path
 from typing import Optional, Union
 
+from dataclasses import asdict
+
 from agent_pipeline import config, normalize
+from agent_pipeline import environment as environment_mod
+from agent_pipeline import grounding as grounding_mod
+from agent_pipeline import impact as impact_mod
+from agent_pipeline import intake as intake_mod
+from agent_pipeline.intake import ProblemPacket
 from agent_pipeline.rag.retriever import Retriever
 from agent_pipeline.agents.design import DesignAgent, write_design_md
 from agent_pipeline.agents.architect import ArchitectAgent, write_outputs
@@ -33,6 +40,29 @@ from agent_pipeline.agents.developer import DeveloperAgent
 from agent_pipeline.review import review_files, write_review_md, evidence_from_files
 
 PlansLike = Union[dict, str, Path]
+RequirementLike = Union[str, ProblemPacket]
+
+
+def _resolve_requirement(requirement: RequirementLike):
+    """Accept a raw requirement string or a ProblemPacket. Returns
+    ``(requirement_text, packet_or_None)``; for a packet the requirement text is the
+    rich prompt-compatible form so existing agents run unchanged (spec §7, §13)."""
+    if isinstance(requirement, ProblemPacket):
+        packet = intake_mod.finalize(requirement)
+        return intake_mod.requirement_text(packet), packet
+    return requirement, None
+
+
+def _packet_payload(packet: Optional[ProblemPacket]) -> dict:
+    """The packet-derived slice of plans.json (empty-ish when no packet was used)."""
+    if packet is None:
+        return {"problem_packet": None, "assumptions": [], "open_questions": [], "readiness": None}
+    return {
+        "problem_packet": packet.to_dict(),
+        "assumptions": [asdict(a) for a in packet.assumptions],
+        "open_questions": [asdict(q) for q in packet.open_questions],
+        "readiness": asdict(packet.readiness) if packet.readiness else None,
+    }
 
 
 def retrieve(requirement: str, top_k: int = config.DEFAULT_TOP_K) -> list[str]:
@@ -40,17 +70,43 @@ def retrieve(requirement: str, top_k: int = config.DEFAULT_TOP_K) -> list[str]:
     return Retriever(rebuild=True).retrieve_paths(requirement, top_k=top_k)
 
 
-def plan(requirement: str, out_dir: Optional[Path] = None) -> dict:
+def plan(requirement: RequirementLike, out_dir: Optional[Path] = None) -> dict:
     """Phases 1-3 — design the requirement, produce three grounded plans, and run
     the deterministic debate. Returns the full ``plans.json`` payload (incl. the
     winner). If ``out_dir`` is given, also writes DESIGN.md / PLANS.md / DEBATE.md.
+
+    ``requirement`` may be a raw string (unchanged behavior) or a structured
+    ``ProblemPacket``; when a packet is given, its packet-derived requirement text
+    grounds the agents and the packet + readiness are recorded in plans.json (spec §13).
     """
+    requirement, packet = _resolve_requirement(requirement)
     retriever = Retriever(rebuild=True)
-    design = DesignAgent(retriever=retriever).generate(requirement)
-    plan_set = ArchitectAgent(retriever=retriever).generate(requirement)
+    # One grounding snapshot per run, shared by Design and Architect so their view of
+    # the repository is identical, and carrying the actual retrieved code (spec §20.2).
+    chunks = grounding_mod.build_grounding(retriever, requirement)
+
+    # Load the operational environment contract (spec §19.4) and produce the pre-planning
+    # change-impact analysis (spec §20.3) the Architect must respond to.
+    env = environment_mod.load_environment()
+    impact = impact_mod.analyze_impact(requirement, chunks, environment=env, packet=packet)
+    impact_block = impact_mod.impact_prompt_block(impact)
+
+    design = DesignAgent(retriever=retriever).generate(requirement, grounding=chunks)
+    plan_set = ArchitectAgent(retriever=retriever).generate(
+        requirement, grounding=chunks, impact_block=impact_block
+    )
 
     plan_set.plans = normalize.normalize_plans(plan_set.plans)
     design.artifacts = normalize.normalize_design(design.artifacts)
+
+    # Packet-aware enrichment (spec §10.3, §18.9): map acceptance criteria → plan coverage,
+    # attach rollback/constraints/assumptions, and compute user-fit + system-fit — a layer
+    # that does NOT change the deterministic winner selection below.
+    evaluation = None
+    if packet is not None:
+        from agent_pipeline.agents.evaluator import assess_plans
+        evaluation = assess_plans(plan_set.plans, packet, impact.to_dict())
+
     debate = EvaluatorAgent().evaluate(plan_set.plans)
 
     payload = {
@@ -61,15 +117,23 @@ def plan(requirement: str, out_dir: Optional[Path] = None) -> dict:
         "plans": plan_set.plans,
         "design": design.artifacts,
         "debate": result_to_dict(debate),
+        "environment": env.summary(),
+        "grounding": grounding_mod.snapshot(chunks),
+        "impact": impact.to_dict(),
+        "evaluation": evaluation,
+        **_packet_payload(packet),
     }
     if out_dir is not None:
         out_dir = Path(out_dir)
         write_design_md(design, out_dir)
         json_path, _ = write_outputs(plan_set, out_dir, design=design.artifacts)
         write_debate_md(debate, out_dir)
-        # fold the debate result into plans.json on disk
+        impact_mod.write_impact_md(impact, out_dir, requirement=requirement)
+        # fold the debate result + environment + grounding + impact + packet into plans.json
         data = json.loads(json_path.read_text(encoding="utf-8"))
-        data["debate"] = payload["debate"]
+        for key in ("debate", "environment", "grounding", "impact", "evaluation",
+                    "problem_packet", "assumptions", "open_questions", "readiness"):
+            data[key] = payload[key]
         json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return payload
 
@@ -87,6 +151,8 @@ def execute(
     out_dir: Optional[Path] = None,
     run_tests: bool = False,
     max_repair_attempts: Optional[int] = None,
+    require_approval: bool = False,
+    approved_by: Optional[str] = None,
 ) -> dict:
     """Phases 3b-4 — implement the debate-winning plan on an isolated git branch,
     run the context.md compliance suite, and HALT for human review (never merges).
@@ -99,9 +165,16 @@ def execute(
     Repair loop (roadmap M2): if the gate fails, the Developer is re-asked with the
     violations fed back, up to ``max_repair_attempts`` times (default
     ``config.MAX_REPAIR_ATTEMPTS``), before halting.
+
+    Risk-based HITL (spec §21): with ``require_approval=True`` (the CLI default), a
+    medium/high-risk change refuses to start without a matching recorded approval —
+    it does not run the Developer, it halts and asks for one. ``approved_by`` records
+    an explicit human approval (a CLI flag capturing a human action, stored in
+    ``out/approvals.json``) and then proceeds. The Python API defaults to
+    ``require_approval=False`` so eval/benchmark callers are unaffected.
     """
     from agent_pipeline.review import GateOutcome, gate_feedback
-    from agent_pipeline import checks
+    from agent_pipeline import checks, hitl
 
     payload = _coerce_payload(plans)
     plan_list = payload["plans"]
@@ -112,18 +185,61 @@ def execute(
         winner_id = result_to_dict(EvaluatorAgent().evaluate(plan_list))["winner_id"]
     winner = next(p for p in plan_list if p.get("id") == winner_id)
 
+    # --- Risk-based HITL gate (spec §21) — before any code is generated ------------
+    impact_d = payload.get("impact") or {}
+    packet_version = (payload.get("problem_packet") or {}).get("version", 1)
+    env_version = (payload.get("environment") or {}).get("environment_version", 0)
+    store_dir = Path(out_dir) if out_dir is not None else config.PROJECT_ROOT / "out"
+    if require_approval:
+        risk, risk_reasons = hitl.effective_risk(impact_d, winner)
+        if approved_by and hitl.requires_pre_execution_approval(risk):
+            # A CLI flag capturing an explicit human decision — recorded, not inferred.
+            hitl.record_approval(store_dir, hitl.HumanApproval(
+                stage="plan", decision="approved", approved_by=approved_by,
+                packet_version=packet_version, plan_id=winner.get("id"),
+                environment_version=env_version, risk_level=risk,
+                notes="approved via ss6 --approved-by flag",
+            ))
+        check = hitl.check_execution_allowed(
+            store_dir, impact=impact_d, chosen_plan=winner,
+            packet_version=packet_version, environment_version=env_version,
+        )
+        if check.blocked:  # blocked on the plan's DECLARED risk, before any code runs
+            return {
+                "awaiting_human_review": True,
+                "approval_required": True,
+                "approval_blocked": True,
+                "risk_level": check.risk_level,
+                "risk_reasons": check.reasons,
+                "winner_id": winner.get("id"),
+                "packet_version": packet_version,
+                "environment_version": env_version,
+                "message": (
+                    f"Execution blocked: risk={check.risk_level} requires human approval. "
+                    f"Record one with `ss6 approve --plan {winner.get('id')} "
+                    f"--approved-by <name>` (or pass --approved-by), then re-run execute."
+                ),
+            }
+
     max_attempts = max_repair_attempts or config.MAX_REPAIR_ATTEMPTS
 
     def gate(files, workdir) -> "GateOutcome":
         review = review_files(files)
-        tests = checks.run_backend_checks(workdir) if run_tests else []
+        # Select checks from the ACTUAL changed paths (spec §22.4): backend change →
+        # backend suite, frontend change → frontend suite.
+        changed = [f["path"] for f in files]
+        tests = checks.run_selected_checks(workdir, changed) if run_tests else []
         tests_ok = checks.checks_passed(tests) if run_tests else True
         passed = review.passed and tests_ok
+        # Missing-tool UNVERIFIED (not a code failure) must not drive the repair loop.
+        unverified_only = (not passed and review.passed
+                           and checks.gate_status(tests) == checks.UNVERIFIED)
         return GateOutcome(
             passed=passed,
             feedback=gate_feedback(review, tests),
             review=review,
             tests=tests,
+            unverified_only=unverified_only,
         )
 
     exec_result = DeveloperAgent().execute(
@@ -133,6 +249,8 @@ def execute(
     review = exec_result.gate_review or review_files(exec_result.files)
     test_results = exec_result.gate_tests or []
     tests_passed = checks.checks_passed(test_results) if run_tests else True
+    # Honest overall status of the real checks (PASS/FAIL/UNVERIFIED/NOT_REQUIRED).
+    checks_status = checks.gate_status(test_results) if run_tests else "NOT_REQUIRED"
 
     # Roadmap M6: validate the debate winner against POST-EXECUTION evidence, not its
     # self-declared label — a 'reuse' winner is only validated if the code actually
@@ -147,19 +265,69 @@ def execute(
     evidence["winner_focus"] = winner_focus
     evidence["winner_validated"] = winner_validated
 
+    # Environment freshness travels with the plan; fall back to a fresh load if this
+    # payload predates the environment contract (spec §19.4).
+    env_summary = payload.get("environment") or environment_mod.load_environment().summary()
+
+    # Post-execution risk from the ACTUAL changed files (spec §21 escalation): a plan
+    # that under-declared its touches and wrote a protected area is re-risked here, and a
+    # prior lower-risk approval no longer suffices.
+    executed_check = hitl.check_execution_allowed(
+        store_dir, impact=impact_d, chosen_plan=winner,
+        packet_version=packet_version, environment_version=env_version,
+        changed_files=exec_result.changed_files,
+    )
+    declared_risk, _ = hitl.effective_risk(impact_d, winner)
+    executed_protected = normalize.protected_touches(exec_result.changed_files)
+    escalated = (hitl.RISK_ORDER.get(executed_check.risk_level, 0)
+                 > hitl.RISK_ORDER.get(declared_risk, 0))
+    approval_summary = {
+        "risk_level": executed_check.risk_level,          # risk of what was ACTUALLY written
+        "declared_risk_level": declared_risk,             # risk of what the plan claimed
+        "risk_reasons": executed_check.reasons,
+        "executed_protected_areas": executed_protected,
+        "post_execution_escalation": escalated,
+        "pre_execution_approval_required": executed_check.required,
+        "pre_execution_approval_recorded": executed_check.approved and executed_check.required,
+        "matched_approval": executed_check.matched,
+        # If the executed change needs approval it does not have, the human halt must treat
+        # this as unapproved even though a lower-risk approval was recorded pre-execution.
+        "approval_sufficient_for_executed_change": (not executed_check.required)
+                                                   or executed_check.approved,
+        "enforced": bool(require_approval),
+        "final_human_review_required": True,   # always — never auto-merge (§21.1)
+    }
+
+    # Evidence bundle for an evidence-complete REVIEW.md (spec §23).
+    review_context = {
+        "problem_packet": payload.get("problem_packet"),
+        "winner": winner,                       # enriched: acceptance coverage, rollback, fit
+        "impact": impact_d,
+        "grounding": payload.get("grounding"),
+        "assumptions": payload.get("assumptions"),
+        "open_questions": payload.get("open_questions"),
+    }
+
     if out_dir is not None:
-        write_review_md(exec_result, review, Path(out_dir), checks=test_results)
+        write_review_md(exec_result, review, Path(out_dir), checks=test_results,
+                        environment=env_summary, approval=approval_summary,
+                        context=review_context)
     return {
         "branch": exec_result.branch,
         "workdir": exec_result.workdir,
+        "environment": env_summary,
+        "approval": approval_summary,
+        "risk_level": approval_summary["risk_level"],
+        "post_execution_escalation": approval_summary["post_execution_escalation"],
         "changed_files": exec_result.changed_files,
         "provider": exec_result.provider,
         "is_live": exec_result.is_live,
         "compliance_passed": review.passed,
         "violations": [v for f in review.files for v in f.violations],
         "tests_run": bool(run_tests),
-        "tests": [{"name": r.name, "result": r.mark, "detail": r.detail[:400]} for r in test_results],
+        "tests": [{"name": r.name, "result": r.status, "detail": r.detail[:400]} for r in test_results],
         "tests_passed": tests_passed,
+        "checks_status": checks_status,            # honest: PASS/FAIL/UNVERIFIED/NOT_REQUIRED
         "gate_passed": review.passed and tests_passed,
         "attempts": exec_result.attempts,
         "repaired": exec_result.repaired,
@@ -197,31 +365,79 @@ def needs_clarification(requirement: str) -> list[str]:
     return questions
 
 
+def approve(
+    plans: PlansLike,
+    plan_id: Optional[str] = None,
+    approved_by: str = "unknown",
+    out_dir: Optional[Path] = None,
+    notes: str = "",
+) -> dict:
+    """Record an explicit human plan approval (spec §21.2) into ``out/approvals.json``.
+
+    The approval is bound to the current packet version, environment version, chosen
+    plan, and effective risk, so a materially changed packet (new version) or a plan
+    that escalates risk will not be authorized by this record."""
+    from agent_pipeline import hitl
+
+    payload = _coerce_payload(plans)
+    plan_list = payload["plans"]
+    winner_id = plan_id or payload.get("debate", {}).get("winner_id") \
+        or result_to_dict(EvaluatorAgent().evaluate(plan_list))["winner_id"]
+    winner = next(p for p in plan_list if p.get("id") == winner_id)
+    risk, _ = hitl.effective_risk(payload.get("impact") or {}, winner)
+    store_dir = Path(out_dir) if out_dir is not None else config.PROJECT_ROOT / "out"
+    approval = hitl.HumanApproval(
+        stage="plan", decision="approved", approved_by=approved_by,
+        packet_version=(payload.get("problem_packet") or {}).get("version", 1),
+        plan_id=winner_id,
+        environment_version=(payload.get("environment") or {}).get("environment_version", 0),
+        risk_level=risk, notes=notes,
+    )
+    path = hitl.record_approval(store_dir, approval)
+    return {"recorded": True, "path": str(path), "plan_id": winner_id,
+            "risk_level": risk, "approved_by": approved_by}
+
+
 def run(
-    requirement: str,
+    requirement: RequirementLike,
     out_dir: Optional[Path] = None,
     run_tests: bool = False,
     max_repair_attempts: Optional[int] = None,
     allow_clarify: bool = False,
+    require_approval: bool = False,
+    approved_by: Optional[str] = None,
 ) -> dict:
-    """Convenience: the entire loop (plan -> execute) for one requirement.
+    """Convenience: the entire loop (plan -> execute) for one requirement or packet.
 
-    With ``allow_clarify=True`` the pipeline first checks whether the requirement is
-    specific enough; if not it returns ``{"needs_clarification": [...]}`` instead of
-    guessing (roadmap M7). A per-phase timing ``trace`` is always included.
+    With ``allow_clarify=True`` the pipeline first checks readiness: for a raw string it
+    runs the vagueness heuristic; for a ProblemPacket it uses the packet's own readiness
+    and blocking open questions. Either way it returns ``{"needs_clarification": [...]}``
+    instead of guessing (roadmap M7 / spec §8). A per-phase timing ``trace`` is included.
+
+    ``require_approval``/``approved_by`` are forwarded to ``execute`` for the risk-based
+    HITL gate (spec §21). If execution is blocked pending approval, the review slot holds
+    the block reason instead of a change.
     """
     import time
 
     if allow_clarify:
-        questions = needs_clarification(requirement)
-        if questions:
-            return {"needs_clarification": questions, "requirement": requirement}
+        if isinstance(requirement, ProblemPacket):
+            packet = intake_mod.finalize(requirement)
+            blocking = [q.question for q in packet.open_questions if q.blocks_planning]
+            if blocking:
+                return {"needs_clarification": blocking, "requirement": intake_mod.requirement_text(packet)}
+        else:
+            questions = needs_clarification(requirement)
+            if questions:
+                return {"needs_clarification": questions, "requirement": requirement}
 
     out = Path(out_dir) if out_dir is not None else config.PROJECT_ROOT / "out"
     t0 = time.time()
     payload = plan(requirement, out_dir=out)
     t1 = time.time()
-    review = execute(payload, out_dir=out, run_tests=run_tests, max_repair_attempts=max_repair_attempts)
+    review = execute(payload, out_dir=out, run_tests=run_tests,
+                     max_repair_attempts=max_repair_attempts,
+                     require_approval=require_approval, approved_by=approved_by)
     t2 = time.time()
     trace = {
         "plan_seconds": round(t1 - t0, 3),

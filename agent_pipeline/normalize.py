@@ -17,6 +17,28 @@ from functools import lru_cache
 from agent_pipeline import config
 
 
+def repo_rel(path: str) -> str:
+    """Strip an optional exact ``target_repo/`` prefix and normalize to POSIX separators.
+
+    The single home for this conversion (previously re-implemented in developer, checks,
+    hitl, impact, and evaluator). Only the exact ``target_repo/`` prefix is stripped, so a
+    spoofing prefix like ``target_repo-evil/`` is left intact for callers to reject.
+    """
+    p = (path or "").strip().replace("\\", "/")
+    if p.startswith("target_repo/"):
+        p = p[len("target_repo/"):]
+    return p
+
+
+def protected_touches(paths) -> list[str]:
+    """Protected areas (config.PROTECTED_AREAS) that any of ``paths`` fall under.
+
+    The single source for "does this change touch a protected area", shared by the impact
+    analyzer and the HITL gate so they can never disagree (previously duplicated lists)."""
+    rels = [repo_rel(p) for p in (paths or [])]
+    return sorted({pa for r in rels for pa in config.PROTECTED_AREAS if r.startswith(pa)})
+
+
 def _stem(ref: str) -> str:
     return ref.split("/")[-1].rsplit(".", 1)[0]
 

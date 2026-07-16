@@ -88,16 +88,26 @@ class GateOutcome:
     feedback: List[str]
     review: "ReviewResult"
     tests: list = field(default_factory=list)
+    # True when the only reason the gate did not pass is a required check that could not
+    # RUN (UNVERIFIED) — compliance is clean and nothing FAILED. No code change can fix a
+    # missing tool, so the repair loop must halt rather than regenerate (spec §22.3).
+    unverified_only: bool = False
 
 
 def gate_feedback(review: "ReviewResult", tests: list | None = None) -> List[str]:
     """Flatten a review (+ optional real-check results) into actionable feedback
-    lines for the Developer's next repair attempt."""
+    lines for the Developer's next repair attempt. A required check that could not
+    run (UNVERIFIED, spec §22.3) is surfaced too — it blocks the gate, so the
+    reviewer must see it rather than have it vanish as a silent skip."""
     lines = [f"{fr.path}: {v}" for fr in review.files for v in fr.violations]
     for r in tests or []:
-        if not getattr(r, "skipped", False) and not getattr(r, "passed", True):
-            first = (r.detail.splitlines()[-1][:160] if getattr(r, "detail", "") else "")
+        status = getattr(r, "status", "")
+        detail = getattr(r, "detail", "")
+        first = detail.splitlines()[-1][:160] if detail else ""
+        if status == "FAIL":
             lines.append(f"{r.name} failed: {first}")
+        elif status == "UNVERIFIED":
+            lines.append(f"{r.name} UNVERIFIED (required check could not run): {first}")
     return lines
 
 
@@ -180,18 +190,120 @@ def evidence_from_files(files: List[dict]) -> dict:
     }
 
 
-def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=None) -> Path:
+def _evidence_sections(context: dict) -> List[str]:
+    """Render the spec §23 evidence blocks from the plan/execute context: feature intent,
+    selected plan, acceptance-criteria checklist, impact, grounding, assumptions, and the
+    context.md rules in force."""
+    lines: List[str] = []
+    packet = context.get("problem_packet") or {}
+    winner = context.get("winner") or {}
+    impact = context.get("impact") or {}
+    grounding = context.get("grounding") or []
+
+    if packet:
+        lines += [
+            "## Feature & intent (ProblemPacket)",
+            "",
+            f"- Title: **{packet.get('feature_title', '—')}** · packet v{packet.get('version', 1)}",
+            f"- User goal / pain: {packet.get('user_goal_or_pain', '—')}",
+            f"- Desired outcome: {packet.get('desired_outcome', '—')}",
+            "",
+        ]
+
+    if winner:
+        lines += [
+            "## Selected plan",
+            "",
+            f"- Plan **{winner.get('id', '?')}** — {winner.get('title', '')} "
+            f"(focus: {winner.get('priority_focus', '')})",
+            f"- Rollback: {winner.get('rollback_strategy', '—')}",
+        ]
+        fit = winner.get("packet_fit") or {}
+        if fit:
+            lines.append(
+                f"- Fit: user-fit **{'PASS' if fit.get('user_fit_pass') else 'REVIEW'}** "
+                f"(coverage {fit.get('acceptance_coverage')}), system-fit "
+                f"**{'PASS' if fit.get('system_fit_pass') else 'REVIEW'}**"
+                + (f" — {'; '.join(fit.get('system_fit_reasons', []))}" if fit.get('system_fit_reasons') else ""))
+        lines.append("")
+
+    covered = winner.get("acceptance_criteria_covered")
+    criteria = covered if covered else [{"criterion": c, "covered": None, "evidence": []}
+                                        for c in packet.get("acceptance_criteria", [])]
+    if criteria:
+        lines += ["## Acceptance criteria (plan-level coverage — not proof of user acceptance)", ""]
+        for c in criteria:
+            mark = "☑" if c.get("covered") else ("☐" if c.get("covered") is False else "•")
+            ev = f" _(evidence: {', '.join(c.get('evidence', []))})_" if c.get("evidence") else ""
+            lines.append(f"- {mark} {c.get('criterion', '')}{ev}")
+        lines.append("")
+
+    sec = impact.get("security_or_privacy_impact") or []
+    schema = impact.get("data_or_schema_impact") or []
+    contracts = impact.get("public_contracts_at_risk") or []
+    protected = impact.get("protected_areas_touched") or []
+    if any([sec, schema, contracts, protected]):
+        lines += ["## Security / schema / contract impact", ""]
+        for label, items in (("security/privacy", sec), ("data/schema", schema),
+                             ("public contracts", contracts), ("protected areas", protected)):
+            if items:
+                lines.append(f"- **{label}:** {'; '.join(items)}")
+        lines.append("")
+
+    if grounding:
+        lines += ["## Grounding used during planning (retrieval evidence)", ""]
+        for g in grounding[:8]:
+            lines.append(f"- `{g.get('rel_path')}:{g.get('start_line')}-{g.get('end_line')}` "
+                         f"(score {g.get('score')})")
+        lines.append("")
+
+    assumptions = context.get("assumptions") or []
+    open_qs = context.get("open_questions") or []
+    if assumptions or open_qs:
+        lines += ["## Assumptions & open questions", ""]
+        for a in assumptions:
+            lines.append(f"- _assumption:_ {a.get('text', a) if isinstance(a, dict) else a}")
+        for q in open_qs:
+            lines.append(f"- _open:_ {q.get('question', q) if isinstance(q, dict) else q}")
+        lines.append("")
+
+    lines += [
+        "## context.md rules in force (enforced by the compliance gate)",
+        "",
+        "- §3 reuse canonical primitives; §4 ApiService-only / repositories for DB / logic in "
+        "services; §5 tests + integer-satang money; no inline hex, no dynamic eval, no secrets.",
+        "",
+    ]
+    return lines
+
+
+def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=None,
+                    environment: dict | None = None, approval: dict | None = None,
+                    context: dict | None = None) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     md_path = out_dir / "REVIEW.md"
     checks = checks or []
-    ran = [c for c in checks if not c.skipped]
-    tests_ok = all(c.passed for c in ran)
+    # Use the canonical reducer so the human-facing verdict can never drift from the
+    # machine gate (spec §22.3). checks imports only config — no cycle with review.
+    from agent_pipeline import checks as checks_mod
+    checks_status = checks_mod.gate_status(checks)
+    tests_ok = checks_status not in ("FAIL", "UNVERIFIED")
     gate_ok = review.passed and tests_ok
-    status = "PASS ✅ — ready for human review" if gate_ok else "FAIL ❌ — fix before review"
+    if not review.passed:
+        status = "FAIL ❌ — compliance violations; fix before review"
+    elif checks_status == "UNVERIFIED":
+        status = "UNVERIFIED ⚠️ — required checks could not run; not ready to merge"
+    elif checks_status == "FAIL":
+        status = "FAIL ❌ — real checks failed; fix before review"
+    else:
+        status = "PASS ✅ — ready for human review"
     lines = [
         "# REVIEW.md — Phase 4 (Test & Human-in-the-Loop)",
         "",
         f"**Automated gate: {status}**",
+        "",
+        "_`gate_passed` means the automated technical gate passed — NOT that a human "
+        "approved the merge or that the user accepted the feature (spec §23)._",
         "",
         f"- Branch: `{exec_result.branch}` (in isolated copy: `{exec_result.workdir}`)",
         f"- Generated by: `{exec_result.provider}` "
@@ -199,6 +311,53 @@ def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=Non
         f"- Files changed: {', '.join(exec_result.changed_files) or '—'}",
         "",
     ]
+    if environment is not None:
+        fresh = "STALE ⚠️" if environment.get("stale") else "fresh"
+        lines += [
+            "## Environment contract (environment.md)",
+            "",
+            f"- System: `{environment.get('system', 'unknown')}` · "
+            f"version {environment.get('environment_version', '?')} · "
+            f"verified by `{environment.get('verified_by', 'unknown')}` · **{fresh}**",
+            f"- Verified at source commit: `{environment.get('last_verified_source_commit') or 'unknown'}`",
+        ]
+        for w in (environment.get("warnings") or [])[:6]:
+            lines.append(f"  - ⚠️ {w}")
+        if not environment.get("present", True):
+            lines.append("  - ⚠️ environment.md absent — operational facts are unverified")
+        lines.append("")
+    if approval is not None:
+        req = approval.get("pre_execution_approval_required")
+        sufficient = approval.get("approval_sufficient_for_executed_change", True)
+        rec = approval.get("pre_execution_approval_recorded")
+        state = "not required" if not req else (
+            "recorded ✅" if (rec and sufficient) else "MISSING/INSUFFICIENT ⚠️")
+        exec_risk = approval.get("risk_level", "unknown")
+        decl_risk = approval.get("declared_risk_level", exec_risk)
+        risk_line = f"- Effective risk (from files actually written): **{exec_risk}**"
+        if approval.get("post_execution_escalation"):
+            risk_line += (f" — ⚠️ ESCALATED from declared **{decl_risk}**; the executed diff "
+                          f"touched protected area(s): {', '.join(approval.get('executed_protected_areas', []))}")
+        lines += [
+            "## Risk & human approval (spec §21)",
+            "",
+            risk_line,
+            f"  - reasons: {'; '.join(approval.get('risk_reasons', []) or ['n/a'])}",
+            f"- Pre-execution approval: **{state}**"
+            + (f" (enforced={approval.get('enforced')})" if req else ""),
+        ]
+        if req and not sufficient:
+            lines.append("  - ⚠️ The executed change needs approval it does not have — treat as "
+                         "**unapproved** and re-approve for the escalated risk before merge.")
+        lines.append(
+            "- Final human review before merge: **required** — the pipeline never auto-merges.")
+        m = approval.get("matched_approval")
+        if m:
+            lines.append(f"  - approved by `{m.get('approved_by')}` at {m.get('approved_at')} "
+                         f"(plan {m.get('plan_id')}, packet v{m.get('packet_version')})")
+        lines.append("")
+    if context:
+        lines += _evidence_sections(context)
     attempt_log = getattr(exec_result, "attempt_log", []) or []
     if len(attempt_log) > 1 or any(not a.get("passed") for a in attempt_log):
         lines += ["## Repair loop (roadmap M2)", ""]
@@ -216,10 +375,12 @@ def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=Non
                 lines.append(f"    - {v}")
         lines.append("")
     if checks:
-        lines += ["## Real checks (tsc + jest, run in the isolated copy)", ""]
+        lines += [f"## Real checks (selected by changed area) — status: {checks_status}", ""]
+        _icon = {"PASS": "✅", "FAIL": "❌", "UNVERIFIED": "⚠️", "NOT_REQUIRED": "⏭️"}
         for c in checks:
-            icon = "⏭️" if c.skipped else ("✅" if c.passed else "❌")
-            lines.append(f"- {icon} **{c.name}** — {c.mark}" + (f": {c.detail.splitlines()[0]}" if c.detail and not c.passed else ""))
+            icon = _icon.get(getattr(c, "status", ""), "•")
+            detail = f": {c.detail.splitlines()[0]}" if c.detail and not c.passed else ""
+            lines.append(f"- {icon} **{c.name}** — {c.mark}{detail}")
         lines.append("")
     lines += [
         "## Compliance results",
@@ -244,15 +405,18 @@ def write_review_md(exec_result, review: ReviewResult, out_dir: Path, checks=Non
         exec_result.diff.strip() or "(no diff)",
         "```",
         "",
-        "## Human-in-the-loop — your decision",
+        "## Human-in-the-loop — your decision (spec §21.3)",
         "",
-        "The pipeline has **halted and will not merge.** To act on this change:",
+        "The pipeline has **halted and will not merge.** Choose one:",
         "",
-        f"- **Inspect:** `cd {exec_result.workdir} && git diff main..{exec_result.branch}`",
-        "- **Approve:** merge the branch, or copy the reviewed file(s) into `target_repo/`.",
-        "- **Reject:** delete the isolated copy under `out/exec/` and adjust the plan.",
+        f"- **APPROVE** — accept the diff for your external merge workflow "
+        f"(`cd {exec_result.workdir} && git diff main..{exec_result.branch}`).",
+        "- **REQUEST FIX** — feed structured feedback back into the repair loop.",
+        "- **RE-PLAN** — the requirement/system understanding changed; revise the packet and re-plan.",
+        "- **REJECT** — stop; the isolated copy under `out/exec/` and these artifacts are preserved.",
         "",
-        "_No production system was touched; all work is confined to the isolated copy._",
+        "_No production system was touched; all work is confined to the isolated copy. "
+        "A human — not the agent — owns the merge/deploy decision._",
     ]
     md_path.write_text("\n".join(lines), encoding="utf-8")
     return md_path

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from agent_pipeline import config
+from agent_pipeline import config, grounding as grounding_mod
 from agent_pipeline.llm import get_llm
 from agent_pipeline.rag.retriever import Retriever
 
@@ -53,7 +53,8 @@ class PlanSet:
     raw: str = field(default="", repr=False)
 
 
-def _build_user_prompt(requirement: str, candidate_files: List[str]) -> str:
+def _build_user_prompt(requirement: str, candidate_files: List[str],
+                       code_block: str = "", impact_block: str = "") -> str:
     primitives = sorted(config.CANONICAL_PRIMITIVES & set(candidate_files)) or sorted(
         config.CANONICAL_PRIMITIVES
     )
@@ -65,10 +66,16 @@ def _build_user_prompt(requirement: str, candidate_files: List[str]) -> str:
         "services": services,
     }
     blueprint = config.CONTEXT_FILE.read_text(encoding="utf-8")
+    code_section = f"{code_block}\n\n" if code_block else ""
+    impact_section = f"{impact_block}\n\n" if impact_block else ""
     return (
         f"REQUIREMENT:\n{requirement}\n\n"
         f"SYSTEM BLUEPRINT (context.md):\n{blueprint}\n\n"
+        f"{impact_section}"
         f"CANDIDATE FILES (from RAG retrieval):\n" + "\n".join(candidate_files) + "\n\n"
+        # Actual retrieved source so plans are grounded in implementation, not filenames
+        # (spec §20.1). Placed before the mock's marker so mock parsing is unaffected.
+        f"{code_section}"
         # The mock reads this block; a live model simply treats it as grounding facts.
         f"<<GROUNDING:{json.dumps(grounding)}>>\n"
     )
@@ -79,9 +86,18 @@ class ArchitectAgent:
         self.retriever = retriever or Retriever(rebuild=True)
         self.llm = get_llm()
 
-    def generate(self, requirement: str, top_k: int = 8) -> PlanSet:
-        candidate_files = self.retriever.retrieve_paths(requirement, top_k=top_k)
-        user = _build_user_prompt(requirement, candidate_files)
+    def generate(self, requirement: str, top_k: int = 8, grounding=None,
+                 impact_block: str = "") -> PlanSet:
+        """Generate three plans. When ``grounding`` (a shared GroundingChunk snapshot)
+        is supplied, candidate files are derived from it and the actual retrieved code
+        is injected into the prompt (spec §20). Otherwise it falls back to path-only
+        retrieval for backward compatibility."""
+        if grounding is None:
+            grounding = grounding_mod.build_grounding(self.retriever, requirement, top_k=top_k)
+        candidate_files = grounding_mod.candidate_files(grounding) or \
+            self.retriever.retrieve_paths(requirement, top_k=top_k)
+        code_block = grounding_mod.to_prompt_block(grounding) if grounding else ""
+        user = _build_user_prompt(requirement, candidate_files, code_block, impact_block)
         resp = self.llm.complete(SYSTEM_PROMPT, user)
         plans = self._parse(resp.text)
         return PlanSet(

@@ -8,14 +8,33 @@ An MVP multi-agent pipeline that ingests a requirement, plans the architecture,
 debates competing technical approaches, and executes the winning plan against a
 localized codebase — here, **eleven-7**, a mock goods/products delivery app
 (Node.js + Angular + MySQL + AWS SNS/SQS/SMS) in `target_repo/`. Built on
-**LangGraph** (orchestration), **SentenceTransformers + ChromaDB** (local RAG), and
-**Anthropic Claude** (agent reasoning).
+an **imperative staged agent pipeline** (LangGraph is an optional orchestration extra —
+the shared pipeline state lives in `graph/state.py`; there is no `StateGraph` yet),
+**SentenceTransformers + ChromaDB** (local RAG), and **Anthropic Claude** (agent reasoning).
 
-> Status: **v1.1 — full pipeline + self-correcting loop.** Understand → Plan → Debate →
-> Execute → Review run end to end, each with its own evaluation harness. The Execute/Review
-> phases now form a **repair loop** behind a **real `tsc` + `jest` gate**, and the offline
-> retriever is a **BM25** ranker. Everything is mocked/local and self-contained by default;
-> no production systems are touched. Milestone status: [`ROADMAP.md`](ROADMAP.md).
+> Status: **v1.2 — structured intake + grounded, human-accountable delivery loop.**
+> Understand → Plan → Debate → Execute → Review run end to end, each with its own evaluation
+> harness. The Execute/Review phases form a **repair loop** behind a **real `tsc` + `jest`
+> gate**. v1.2 adds a structured **ProblemPacket** intake, an **`environment.md`** system
+> contract, **real code grounding** + impact analysis, a **risk-based human-approval gate**,
+> and an **evidence-complete `REVIEW.md`**. Everything is mocked/local and self-contained by
+> default; no production systems are touched. Milestone status: [`ROADMAP.md`](ROADMAP.md).
+
+### What's new in v1.2
+
+- **Structured intake (ProblemPacket):** `ss6 plan|run --intake feature.(json|md)` turns a
+  vague requirement into a measurable packet (goal, acceptance criteria, constraints,
+  readiness, open questions). Raw `ss6 plan "..."` still works.
+- **`environment.md` contract:** a human-reviewed system map with freshness/validation,
+  distinct from the normative `context.md`.
+- **Real code grounding + impact analysis:** planners receive actual retrieved code
+  (cited `path:line`), and a pre-planning `IMPACT.md` proposes a risk level.
+- **Risk-based HITL:** medium/high-risk changes must be approved (`ss6 approve`) before
+  execution; nothing ever auto-merges.
+- **Evidence-complete `REVIEW.md`:** acceptance-criteria checklist, grounding, approval,
+  honest `PASS/FAIL/UNVERIFIED` checks, and explicit human decisions.
+- **Safety fixes:** path-containment, repair-loop isolation, and honest gate status.
+- **Tests:** 35 → **119** passing.
 
 ### What's new in v1.1
 
@@ -31,8 +50,9 @@ localized codebase — here, **eleven-7**, a mock goods/products delivery app
   **Recall@5 94%**. Details in [`eval/BASELINE.md`](eval/BASELINE.md).
 - **Evidence + invariance (M6):** the debate winner is validated against post-execution evidence
   and is invariant to plan wording/order.
-- **Clarification + tracing (M7):** vague requirements trigger a clarifying question; each run
-  reports per-phase timing.
+- **Clarification + tracing (M7):** with `ss6 run --clarify` (opt-in) a vague requirement or
+  an under-specified packet returns clarifying questions instead of guessing; each run reports
+  per-phase timing.
 - **Tests:** 17 → **35** passing.
 
 ## Install & quickstart
@@ -55,8 +75,14 @@ pip install -e .                 # editable install; adds the `ss6` command
 ss6 rag "how is the delivery fee computed from the cart total?"   # Phase 1: retrieve
 ss6 plan "Add a Top Customers by Spend screen" --out ./out        # Phases 1–3 → out/
 ss6 debate --plans out/plans.json                                 # re-score plans
-ss6 execute --plans out/plans.json --out ./out                    # Phases 3b–4 → REVIEW.md (halts)
-ss6 run "Add ALL Member points redemption at checkout" --out ./out # whole loop
+
+# Phases 3b–4. A medium/high-risk change (new endpoint/screen/schema) requires a
+# recorded human approval before execution (spec §21); approve the winning plan, then run:
+ss6 approve --plans out/plans.json --plan B --approved-by "Safe"  # record the decision
+ss6 execute --plans out/plans.json --out ./out                    # → REVIEW.md (halts)
+
+# whole loop; --approved-by records the approval inline so execution proceeds
+ss6 run "Add ALL Member points redemption at checkout" --out ./out --approved-by "Safe"
 ss6 eval debate --plans out/plans.json                            # run an eval harness
 ```
 
@@ -86,8 +112,9 @@ The gate can run the target repo's **real `tsc` + `jest`** (not just syntactic
 checks) inside the isolated branch copy:
 
 ```bash
-ss6 run "Add a Top Customers by Spend analytics endpoint" --out ./out --run-tests
+ss6 run "Add a Top Customers by Spend analytics endpoint" --out ./out --run-tests --approved-by "Safe"
 #   Winner : Plan B (reuse)
+#   Risk   : medium (new endpoint) → approval recorded ("Safe")
 #   PASS   tsc  (real check)   ← the generated change actually compiles
 #   PASS   jest (real check)   ← the generated unit test passes
 #   Gate   : PASS  →  halts for human review (nothing merged)
@@ -128,34 +155,41 @@ feeds any violations back to the Developer, which regenerates — editing existi
 **surgical anchored edits or unified diffs** rather than overwriting them — until the gate
 passes or the `SS6_MAX_REPAIR` budget is exhausted, then halts for review.
 
+In **v1.2** this loop is wrapped in a traceable, human-accountable contract: a structured
+**ProblemPacket** (`--intake`) defines a measurable done; `environment.md` maps the current
+system; planning is grounded in **actual retrieved code** and a pre-planning **impact/risk**
+analysis; **medium/high-risk changes require a recorded human approval** (`ss6 approve`) before
+execution and are re-checked against the files actually written; and `REVIEW.md` maps every
+acceptance criterion and system rule to executed evidence. See [`docs/WORKLOG.md`](docs/WORKLOG.md).
+
 ## Layout
 
 ```
 .
-├── context.md                  # System Blueprint: architectural + design rules
+├── context.md                  # System Blueprint: normative architecture + design rules (MUST)
+├── environment.md              # operational system map + integration contract (how it IS)
 ├── ROADMAP.md                  # milestone status (M1–M7)
-├── requirements.txt
+├── docs/WORKLOG.md             # running log of the v1.2 spec-upgrade work
+├── examples/                   # feature-intake template + top_customers_intake.{json,md}
 ├── agent_pipeline/
-│   ├── config.py               # central config (paths, model names, k, repair budget)
-│   ├── api.py                  # callable API: retrieve/plan/debate/execute/run (+ repair loop)
-│   ├── review.py               # compliance + security gate; repair feedback (M1/M7)
-│   ├── vcs.py                  # isolated git copy; anchored edits + git apply --3way (M3)
-│   ├── rag/
-│   │   ├── ingest.py           # parse codebase + context.md → chunks
-│   │   ├── embeddings.py       # SentenceTransformer w/ offline fallback
-│   │   ├── lexical.py          # BM25 + OOV-coverage offline retriever (M5)
-│   │   ├── vector_store.py     # ChromaDB persistent store wrapper
-│   │   └── retriever.py        # high-level query API (semantic | BM25)
-│   ├── graph/state.py          # shared LangGraph pipeline state
-│   └── agents/                 # Design/Architect/Evaluator/Developer (+ repair loop, M2)
-├── scripts/
-│   ├── init_rag.py             # Week 1 entrypoint: build the index
-│   └── query_rag.py            # manual query CLI
-├── eval/
-│   ├── rag_eval_dataset.json   # labeled queries → relevant files
-│   └── recall_at_k.py          # Recall@k / MRR harness
+│   ├── config.py               # central config (paths, repair budget, write-allowlist, PROTECTED_AREAS)
+│   ├── api.py                  # callable API: retrieve/plan/debate/execute/run/approve
+│   ├── intake.py               # ProblemPacket: structured intake, readiness, requirement_text
+│   ├── environment.py          # load/validate environment.md + git freshness
+│   ├── grounding.py            # bounded, cited code chunks shared by Design/Architect
+│   ├── impact.py               # pre-planning ImpactAnalysis + proposed risk level
+│   ├── hitl.py                 # risk-based human approval records + gate
+│   ├── review.py               # compliance/security gate; evidence-complete REVIEW.md
+│   ├── checks.py               # real tsc/jest gate; honest PASS/FAIL/UNVERIFIED/NOT_REQUIRED
+│   ├── vcs.py                  # isolated git copy; reset-to-baseline; anchored edits + 3way apply
+│   ├── normalize.py            # shared path helpers (repo_rel, protected_touches)
+│   ├── rag/                    # ingest / embeddings / lexical(BM25) / vector_store / retriever
+│   ├── graph/state.py          # shared pipeline state (imperative staging; LangGraph-compatible)
+│   └── agents/                 # Design / Architect / Evaluator / Developer (+ repair loop)
+├── scripts/                    # init_rag.py, query_rag.py, ss6_demo.sh (closed-loop demo)
+├── eval/                       # Recall@k, plan/debate/design/execution quality, impact_study
 ├── target_repo/                # eleven-7: MOCK goods-delivery app (Node/Angular/MySQL/AWS) — the test bed
-└── tests/test_rag.py
+└── tests/                      # 119 tests (rag, intake, environment, grounding, impact, hitl, isolation, …)
 ```
 
 ## Quickstart

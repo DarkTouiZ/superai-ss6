@@ -12,6 +12,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TARGET_REPO_DIR = PROJECT_ROOT / "target_repo"
 CONTEXT_FILE = PROJECT_ROOT / "context.md"
+# Operational system map + integration contract (descriptive; how the system IS).
+# context.md stays the normative source of truth (how it MUST be). See environment.md.
+ENVIRONMENT_FILE = Path(os.getenv("SS6_ENVIRONMENT_FILE", str(PROJECT_ROOT / "environment.md")))
 # Persistent vector store. Defaults to <project>/.chroma; override with SS6_CHROMA_DIR
 # (useful on read-only/mounted filesystems where the project dir isn't writable).
 CHROMA_DIR = Path(os.getenv("SS6_CHROMA_DIR", str(PROJECT_ROOT / ".chroma")))
@@ -101,6 +104,38 @@ PRIORITY_WEIGHTS = {
 EXEC_DIR = Path(os.getenv("SS6_EXEC_DIR", str(PROJECT_ROOT / "out" / "exec")))
 GIT_AUTHOR_NAME = os.getenv("SS6_GIT_NAME", "SS6 Developer Agent")
 GIT_AUTHOR_EMAIL = os.getenv("SS6_GIT_EMAIL", "ss6-agent@local")
+
+# --- Write allowlist (safety, spec §22.1) ------------------------------------
+# The Developer writes only inside the isolated copy AND only under known roots of
+# the eleven-7 repo. Containment (the resolved path stays under the working copy) is
+# the hard guard; this allowlist is a second fence so a generated path can't drop a
+# file at an unexpected repo location. Kept as data so it's easy to review/extend.
+ALLOWED_WRITE_ROOTS = {"backend", "frontend", "infra", "localstack"}
+ALLOWED_WRITE_FILES = {
+    "docker-compose.yml", "README.md", ".gitignore",
+    # Common repo-root tooling a legitimate change may touch (was too strict before).
+    "package.json", "package-lock.json", "tsconfig.json", "tsconfig.base.json",
+    ".env.example", "Makefile",
+}
+
+# Protected areas: changes here are high-risk and need explicit human approval.
+# SINGLE SOURCE OF TRUTH (mirrored descriptively in environment.md §9) — the impact
+# analyzer and the HITL gate both read this list so they can never drift apart.
+PROTECTED_AREAS = [
+    "backend/db/migrations",
+    "backend/src/db",
+    "backend/src/aws",
+    "frontend/src/app/core/services/api.service.ts",
+    "docker-compose.yml",
+    "infra/",
+    "localstack/",
+]
+
+# Real backend/frontend checks reuse a cached node_modules (symlink) with NO network.
+# If the cache is absent we do NOT silently run `npm install` (which would hit the
+# network and contradict the "$0, offline" claim); instead the check is reported
+# UNVERIFIED unless this opt-in is set. (spec §22.4)
+ALLOW_NPM_INSTALL = os.getenv("SS6_ALLOW_NPM_INSTALL", "").lower() in {"1", "true", "yes"}
 
 # --- Repair loop (roadmap M2) ------------------------------------------------
 # When the gate (compliance + optional tsc/jest) fails, the Developer is re-asked
