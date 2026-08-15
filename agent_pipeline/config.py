@@ -43,9 +43,9 @@ DEFAULT_TOP_K = int(os.getenv("SS6_TOP_K", "5"))
 EVAL_K_VALUES = (1, 3, 5)  # Recall@k cutoffs reported by the eval harness
 
 # Retriever selection (roadmap M5): auto | semantic | bm25 | hashing.
-#   auto     -> semantic encoder if sentence-transformers is installed, else BM25.
+#   auto     -> locally cached semantic encoder if available, else BM25; no network.
 #   bm25     -> force the dependency-free BM25 lexical retriever (strong offline baseline).
-#   semantic -> force the sentence-transformers path (errors if unavailable).
+#   semantic -> force sentence-transformers; this is the only mode allowed to download.
 #   hashing  -> the legacy hashed-bag fallback (kept only for comparison).
 RETRIEVER = os.getenv("SS6_RETRIEVER", "auto").lower()
 

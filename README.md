@@ -1,5 +1,11 @@
 # SuperAI SS6 — Autonomous AI Software Engineering Pipeline
 
+> **Archived research prototype.** Development has moved to
+> [AutoRepoFlow](https://github.com/DarkTouiZ/auto-repoflow), which supersedes
+> this repository as the evidence-grounded review system used for the final
+> SuperAI presentation. SS6 v1.2 remains a reproducible baseline and design-history
+> artifact; it is not the current release product.
+
 [![CI](https://github.com/DarkTouiZ/superai-ss6/actions/workflows/ci.yml/badge.svg)](https://github.com/DarkTouiZ/superai-ss6/actions/workflows/ci.yml)
 ![cost](https://img.shields.io/badge/cost-%240%20(offline%20mock)-brightgreen)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
@@ -53,7 +59,7 @@ the shared pipeline state lives in `graph/state.py`; there is no `StateGraph` ye
 - **Clarification + tracing (M7):** with `ss6 run --clarify` (opt-in) a vague requirement or
   an under-specified packet returns clarifying questions instead of guessing; each run reports
   per-phase timing.
-- **Tests:** 17 → **35** passing.
+- **Tests:** **119** passing in the offline archive baseline.
 
 ## Install & quickstart
 
@@ -246,21 +252,24 @@ provider fail loudly instead of falling back.
 
 ### Getting the true semantic Recall@k baseline
 
-The first `init_rag.py` run after `pip install` downloads the
-`all-MiniLM-L6-v2` model (~80 MB) once, then runs fully offline. When the real
+Automatic retrieval never downloads from Hugging Face: it uses a locally cached
+semantic model when available and otherwise selects BM25. To opt into a model
+download, set `SS6_RETRIEVER=semantic` explicitly. The first explicit semantic
+run can download `all-MiniLM-L6-v2` (~80 MB), then runs offline. When the real
 encoder is active the eval prints `semantic=True`; the lexical fallback prints
 `semantic=False`. Run the baseline on a machine with network access to the model
 host:
 
 ```bash
-python scripts/init_rag.py        # expect: embedder sentence-transformers/..., semantic True
-python eval/recall_at_k.py        # this is your real semantic Recall@k baseline
+SS6_RETRIEVER=semantic python scripts/init_rag.py
+SS6_RETRIEVER=semantic python eval/recall_at_k.py
 ```
 
-If `sentence-transformers`/`chromadb` are unavailable (offline CI), the pipeline
-auto-falls back to a deterministic hashing embedder + in-memory store so the eval
-still runs end-to-end — for plumbing checks, not for grading model quality. Set
-`SS6_CHROMA_DIR` to a writable path if the project dir is read-only.
+If the cache or semantic dependencies are unavailable, default `auto` mode uses
+the dependency-free BM25 retriever without waiting for the network. The hashing
+embedder remains available only through `SS6_RETRIEVER=hashing` for plumbing
+comparisons, not for grading semantic quality. Set `SS6_CHROMA_DIR` to a writable
+path if the project directory is read-only.
 
 To use **live Anthropic Claude** for the Architect (instead of the offline mock),
 set `ANTHROPIC_API_KEY`; the plan eval prints `live=True` when a real model ran.

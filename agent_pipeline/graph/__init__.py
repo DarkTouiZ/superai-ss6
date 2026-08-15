@@ -1,4 +1,7 @@
-"""LangGraph orchestration. Week 1 ships the shared state only; nodes land Week 2+."""
+"""Typed state compatibility layer for the imperative pipeline.
+
+No LangGraph graph or nodes are instantiated in this archived prototype.
+"""
 from .state import PipelineState
 
 __all__ = ["PipelineState"]

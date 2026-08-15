@@ -1,8 +1,8 @@
-"""Shared pipeline state passed between LangGraph nodes.
+"""Shared typed state used by the imperative staged pipeline.
 
-This is the typed channel the four phases read/write. Week 1 only the
-``understand`` fields are populated (by the Retriever). The rest are declared now
-so later weeks slot in without reshaping state.
+The prototype does not instantiate a LangGraph ``StateGraph``. This schema keeps
+phase hand-offs explicit and remains compatible with a future orchestration
+adapter without claiming that one exists today.
 """
 from __future__ import annotations
 

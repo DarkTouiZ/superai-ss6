@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import List
 
 from agent_pipeline import config
-from agent_pipeline.rag.embeddings import Embedder, get_embedder
+from agent_pipeline.rag.embeddings import Embedder, HashingEmbedder, get_embedder
 from agent_pipeline.rag.ingest import Chunk, load_chunks
 from agent_pipeline.rag.vector_store import Hit, get_store
 
@@ -64,13 +64,28 @@ class Retriever:
     def __init__(self, rebuild: bool = True) -> None:
         self._bm25 = None
         mode = config.RETRIEVER
-        # Probe for a semantic encoder unless BM25/hashing is explicitly forced.
-        if mode in ("bm25", "hashing"):
-            self.embedder = None if mode == "bm25" else get_embedder()
+        if mode == "bm25":
+            self.embedder = None
             want_semantic = False
-        else:
-            self.embedder = get_embedder()
+        elif mode == "hashing":
+            self.embedder = HashingEmbedder()
+            want_semantic = False
+        elif mode == "auto":
+            # Auto is safe for offline/default use: it may use an already-cached
+            # model, but the local-only probe cannot contact Hugging Face.
+            self.embedder = get_embedder(allow_download=False)
             want_semantic = self.embedder.is_semantic
+        elif mode == "semantic":
+            # This explicit mode is the only path allowed to download a model.
+            self.embedder = get_embedder(
+                allow_download=True,
+                require_semantic=True,
+            )
+            want_semantic = True
+        else:
+            raise ValueError(
+                "SS6_RETRIEVER must be one of auto, semantic, bm25, or hashing"
+            )
 
         use_bm25 = mode == "bm25" or (mode == "auto" and not want_semantic)
         if use_bm25:
