@@ -6,7 +6,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent_pipeline import config
 from agent_pipeline.rag.lexical import BM25Index, tokenize
+from agent_pipeline.rag.embeddings import HashingEmbedder
 from agent_pipeline.rag.retriever import Retriever
+import agent_pipeline.rag.retriever as retriever_module
 
 
 def test_tokenizer_splits_identifiers():
@@ -38,3 +40,45 @@ def test_oov_coverage_lowers_confidence(monkeypatch):
     idx = BM25Index.build()
     assert idx.coverage(tokenize("Kubernetes horizontal pod autoscaler")) < 0.5
     assert idx.coverage(tokenize("delivery fee pricing service repository")) >= 0.6
+
+
+def test_auto_retriever_never_allows_model_download(monkeypatch):
+    calls = []
+
+    def cache_only_embedder(**kwargs):
+        calls.append(kwargs)
+        return HashingEmbedder()
+
+    monkeypatch.setattr(config, "RETRIEVER", "auto")
+    monkeypatch.setattr(retriever_module, "get_embedder", cache_only_embedder)
+    r = Retriever(rebuild=True)
+
+    assert calls == [{"allow_download": False}]
+    assert r.report.embedder == "bm25-lexical"
+
+
+def test_explicit_semantic_mode_is_the_only_download_path(monkeypatch):
+    calls = []
+
+    class SemanticStub:
+        name = "semantic-stub"
+        is_semantic = True
+
+        def encode(self, texts):
+            raise AssertionError("not needed for this contract test")
+
+    def explicit_embedder(**kwargs):
+        calls.append(kwargs)
+        return SemanticStub()
+
+    monkeypatch.setattr(config, "RETRIEVER", "semantic")
+    monkeypatch.setattr(retriever_module, "get_embedder", explicit_embedder)
+    monkeypatch.setattr(
+        retriever_module,
+        "build_index",
+        lambda **kwargs: ("semantic-report", "semantic-store"),
+    )
+    r = Retriever(rebuild=True)
+
+    assert calls == [{"allow_download": True, "require_semantic": True}]
+    assert r.report == "semantic-report"
